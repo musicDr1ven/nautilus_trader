@@ -44,6 +44,9 @@ def get_cached_bybit_http_client(
     """
     Cache and return a Bybit HTTP client with the given key and secret.
 
+    If ``api_key`` and ``api_secret`` are ``None``, then they will be sourced from the
+    environment variables ``BYBIT_API_KEY`` and ``BYBIT_API_SECRET``.
+
     If a cached client with matching parameters already exists, the cached client will be returned.
 
     Parameters

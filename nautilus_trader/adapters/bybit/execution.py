@@ -161,11 +161,19 @@ class BybitExecutionClient(LiveExecutionClient):
             else nautilus_pyo3.BybitEnvironment.MAINNET
         )
 
+        # Get credentials from config or environment variables
+        import os
+
+        ws_api_key: str = config.api_key or os.getenv("BYBIT_API_KEY") or ""
+        ws_api_secret: str = config.api_secret or os.getenv("BYBIT_API_SECRET") or ""
+
+        self._log.info(f"WS API key: {ws_api_key[:10] if ws_api_key else 'EMPTY'}", LogColor.BLUE)
+
         # WebSocket API - Private channel
         self._ws_private_client = nautilus_pyo3.BybitWebSocketClient.new_private(
             environment=environment,
-            api_key=config.api_key or "",
-            api_secret=config.api_secret or "",
+            api_key=ws_api_key,
+            api_secret=ws_api_secret,
             url=config.base_url_ws_private,
             heartbeat=20,
         )
@@ -177,8 +185,8 @@ class BybitExecutionClient(LiveExecutionClient):
             self._ws_trade_client: nautilus_pyo3.BybitWebSocketClient | None = (
                 nautilus_pyo3.BybitWebSocketClient.new_trade(
                     environment=environment,
-                    api_key=config.api_key or "",
-                    api_secret=config.api_secret or "",
+                    api_key=ws_api_key,
+                    api_secret=ws_api_secret,
                     url=config.base_url_ws_trade,
                     heartbeat=20,
                 )
@@ -419,8 +427,9 @@ class BybitExecutionClient(LiveExecutionClient):
                     if end_dt:
                         end_ms = int(end_dt.timestamp() * 1000)
 
-                response = await self._http_client.request_fill_reports(
+                response = await self._http_client.request_fill_reports(  # type: ignore
                     product_type=product_type,
+                    account_id=self.pyo3_account_id,
                     instrument_id=pyo3_instrument_id,
                     start=start_ms,
                     end=end_ms,
@@ -457,8 +466,9 @@ class BybitExecutionClient(LiveExecutionClient):
                         command.instrument_id.value,
                     )
 
-                response = await self._http_client.request_position_status_reports(
+                response = await self._http_client.request_position_status_reports(  # type: ignore
                     product_type=product_type,
+                    account_id=self.pyo3_account_id,
                     instrument_id=pyo3_instrument_id,
                 )
                 pyo3_reports.extend(response)
@@ -507,13 +517,18 @@ class BybitExecutionClient(LiveExecutionClient):
             time_in_force_to_pyo3(order.time_in_force) if order.time_in_force else None
         )
 
+        # Extract trigger price for conditional orders
+        pyo3_trigger_price = None
+        if hasattr(order, "trigger_price") and order.trigger_price is not None:
+            pyo3_trigger_price = nautilus_pyo3.Price.from_str(str(order.trigger_price))
+
         # Determine product type (simplified - use first)
         product_type = self._product_types[0] if self._product_types else BybitProductType.LINEAR
 
         try:
             if self._use_ws_trade_api and self._ws_trade_client:
                 # Submit via WebSocket
-                await self._ws_trade_client.submit_order(
+                await self._ws_trade_client.submit_order(  # type: ignore
                     product_type=product_type,
                     instrument_id=pyo3_instrument_id,
                     client_order_id=pyo3_client_order_id,
@@ -522,7 +537,8 @@ class BybitExecutionClient(LiveExecutionClient):
                     quantity=pyo3_quantity,
                     time_in_force=pyo3_time_in_force,
                     price=pyo3_price,
-                    reduce_only=order.is_reduce_only if hasattr(order, "is_reduce_only") else False,
+                    trigger_price=pyo3_trigger_price,
+                    reduce_only=order.is_reduce_only,
                 )
             else:
                 # Submit via HTTP
@@ -535,7 +551,7 @@ class BybitExecutionClient(LiveExecutionClient):
                     quantity=pyo3_quantity,
                     time_in_force=pyo3_time_in_force or nautilus_pyo3.TimeInForce.GTC,
                     price=pyo3_price,
-                    reduce_only=order.is_reduce_only if hasattr(order, "is_reduce_only") else False,
+                    reduce_only=order.is_reduce_only,
                 )
         except Exception as e:
             self._log.error(f"Failed to submit order {order.client_order_id}: {e}")
