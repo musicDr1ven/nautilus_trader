@@ -97,6 +97,7 @@ config_node = TradingNodeConfig(
         reconciliation_instrument_ids=reconciliation_instrument_ids,
         open_check_interval_secs=5.0,
         open_check_open_only=False,
+        position_check_interval_secs=5.0,
         # filtered_client_order_ids=[ClientOrderId("1757985206157")],  # For demonstration
         # own_books_audit_interval_secs=2.0,
         # manage_own_order_books=True,
