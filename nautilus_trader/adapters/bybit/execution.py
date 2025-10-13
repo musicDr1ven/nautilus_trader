@@ -22,6 +22,9 @@ WebSocket clients exposed via PyO3 for performance.
 """
 
 import asyncio
+import os
+import sys
+import traceback
 from typing import Any
 
 from nautilus_trader.accounting.factory import AccountFactory
@@ -55,6 +58,7 @@ from nautilus_trader.execution.reports import PositionStatusReport
 from nautilus_trader.live.execution_client import LiveExecutionClient
 from nautilus_trader.model.enums import AccountType
 from nautilus_trader.model.enums import OmsType
+from nautilus_trader.model.enums import OrderStatus
 from nautilus_trader.model.events import AccountState
 from nautilus_trader.model.events import OrderCancelRejected
 from nautilus_trader.model.events import OrderModifyRejected
@@ -64,6 +68,7 @@ from nautilus_trader.model.functions import order_type_to_pyo3
 from nautilus_trader.model.functions import time_in_force_to_pyo3
 from nautilus_trader.model.identifiers import AccountId
 from nautilus_trader.model.identifiers import ClientId
+from nautilus_trader.model.identifiers import ClientOrderId
 from nautilus_trader.model.orders import Order
 
 
@@ -109,7 +114,6 @@ class BybitExecutionClient(LiveExecutionClient):
         PyCondition.not_empty(config.product_types, "config.product_types")
         assert config.product_types is not None  # Type narrowing for mypy
 
-        # Determine account type based on product types
         if set(config.product_types) == {BybitProductType.SPOT}:
             self._account_type = AccountType.CASH
             # Bybit SPOT accounts support margin trading (borrowing)
@@ -134,13 +138,25 @@ class BybitExecutionClient(LiveExecutionClient):
         # Configuration
         self._config = config
         self._product_types = list(config.product_types)
-        self._log.info(
-            f"config.product_types={[str(p) for p in config.product_types]}",
-            LogColor.BLUE,
-        )
+        self._use_gtd = config.use_gtd
+        self._use_ws_trade_api = config.use_ws_trade_api
+        self._use_ws_execution_fast = config.use_ws_execution_fast
+        self._use_http_batch_api = config.use_http_batch_api
+        self._futures_leverages = config.futures_leverages
+        self._margin_mode = config.margin_mode
+        self._position_mode = config.position_mode
+        self._use_spot_position_reports = config.use_spot_position_reports
+        self._ignore_uncached_instrument_executions = config.ignore_uncached_instrument_executions
+
+        self._log.info(f"Account type: {self._account_type}", LogColor.BLUE)
+        self._log.info(f"Product types: {[str(p) for p in self._product_types]}", LogColor.BLUE)
         self._log.info(f"{config.testnet=}", LogColor.BLUE)
         self._log.info(f"{config.use_gtd=}", LogColor.BLUE)
+        self._log.info(f"{config.use_ws_execution_fast=}", LogColor.BLUE)
         self._log.info(f"{config.use_ws_trade_api=}", LogColor.BLUE)
+        self._log.info(f"{config.use_http_batch_api=}", LogColor.BLUE)
+        self._log.info(f"{config.use_spot_position_reports=}", LogColor.BLUE)
+        self._log.info(f"{config.ignore_uncached_instrument_executions=}", LogColor.BLUE)
         self._log.info(f"{config.ws_trade_timeout_secs=}", LogColor.BLUE)
 
         # Set account ID
@@ -161,13 +177,12 @@ class BybitExecutionClient(LiveExecutionClient):
             else nautilus_pyo3.BybitEnvironment.MAINNET
         )
 
-        # Get credentials from config or environment variables
-        import os
-
         ws_api_key: str = config.api_key or os.getenv("BYBIT_API_KEY") or ""
         ws_api_secret: str = config.api_secret or os.getenv("BYBIT_API_SECRET") or ""
-
-        self._log.info(f"WS API key: {ws_api_key[:10] if ws_api_key else 'EMPTY'}", LogColor.BLUE)
+        self._log.info(
+            f"WebSocket API key: {ws_api_key[:10] if ws_api_key else 'EMPTY'}",
+            LogColor.BLUE,
+        )
 
         # WebSocket API - Private channel
         self._ws_private_client = nautilus_pyo3.BybitWebSocketClient.new_private(
@@ -204,10 +219,13 @@ class BybitExecutionClient(LiveExecutionClient):
         await self._update_account_state()
         await self._await_account_registered()
 
-        self._log.info("Bybit API key authenticated", LogColor.GREEN)
-        self._log.info(f"API key {self._http_account.client.api_key} has trading permissions")
+        # Set account_id on WebSocket clients so they can parse account messages
+        self._ws_private_client.set_account_id(self.pyo3_account_id)
+        if self._ws_trade_client:
+            self._ws_trade_client.set_account_id(self.pyo3_account_id)
 
-        await self._ws_private_client.connect()
+        # Connect to private WebSocket
+        await self._ws_private_client.connect(callback=self._handle_msg)
 
         # Wait for connection to be established
         await self._ws_private_client.wait_until_active(timeout_secs=10.0)
@@ -266,8 +284,13 @@ class BybitExecutionClient(LiveExecutionClient):
         # Ensures instrument definitions are available for correct
         # price and size precisions when parsing responses
         instruments_pyo3 = self.bybit_instrument_provider.instruments_pyo3()
+        self._log.info(f"Caching {len(instruments_pyo3)} instruments")
         for inst in instruments_pyo3:
             self._http_client.add_instrument(inst)
+            self._ws_private_client.add_instrument(inst)
+            if self._ws_trade_client:
+                self._ws_trade_client.add_instrument(inst)
+        self._log.info("Instrument cache populated")
 
         self._log.debug("Cached instruments", LogColor.MAGENTA)
 
@@ -310,14 +333,16 @@ class BybitExecutionClient(LiveExecutionClient):
         reports: list[OrderStatusReport] = []
 
         try:
-            for product_type in self._product_types:
-                pyo3_instrument_id = None
-                if command.instrument_id:
-                    pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(
-                        command.instrument_id.value,
-                    )
+            # Extract instrument_id if provided
+            pyo3_instrument_id = None
+            if command.instrument_id:
+                pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(
+                    command.instrument_id.value,
+                )
 
+            for product_type in self._product_types:
                 response = await self._http_client.request_order_status_reports(
+                    account_id=self.pyo3_account_id,
                     product_type=product_type,
                     instrument_id=pyo3_instrument_id,
                     open_only=command.open_only,
@@ -331,10 +356,30 @@ class BybitExecutionClient(LiveExecutionClient):
         except ValueError as exc:
             if "request canceled" in str(exc).lower():
                 self._log.debug("OrderStatusReports request cancelled during shutdown")
+            elif "symbol` must be initialized" in str(exc):
+                self._log.warning(
+                    "Order history contains instruments not in cache - "
+                    "this is expected if orders exist for uncached product types or delisted symbols. "
+                    f"Cached instruments: {len(self.bybit_instrument_provider.instruments_pyo3())}",
+                    LogColor.YELLOW,
+                )
             else:
-                self._log.exception("Failed to generate OrderStatusReports", exc)
+                exc_type, exc_value, exc_tb = sys.exc_info()
+                tb_lines = traceback.format_exception(exc_type, exc_value, exc_tb)
+                full_trace = "".join(tb_lines)
+                self._log.error(
+                    f"Failed to generate OrderStatusReports: {exc}\n"
+                    f"Full traceback (all lines):\n{full_trace}",
+                )
         except Exception as e:
-            self._log.exception("Failed to generate OrderStatusReports", e)
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            # Format the full traceback without any line collapsing
+            tb_lines = traceback.format_exception(exc_type, exc_value, exc_tb)
+            full_trace = "".join(tb_lines)
+            self._log.error(
+                f"Failed to generate OrderStatusReports: {e}\n"
+                f"Full traceback (all lines):\n{full_trace}",
+            )
 
         len_reports = len(reports)
         plural = "" if len_reports == 1 else "s"
@@ -356,12 +401,22 @@ class BybitExecutionClient(LiveExecutionClient):
         )
 
         try:
-            # Determine product type (simplified - use first)
+            # FIXME: Determine product type (simplified - use first)
             product_type = (
                 self._product_types[0] if self._product_types else BybitProductType.LINEAR
             )
 
+            self._log.info(
+                f"Before InstrumentId.from_str: {command.instrument_id.value}",
+                LogColor.CYAN,
+            )
+
             pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
+
+            self._log.info(
+                f"After InstrumentId.from_str: {pyo3_instrument_id}",
+                LogColor.CYAN,
+            )
             pyo3_client_order_id = (
                 nautilus_pyo3.ClientOrderId(command.client_order_id.value)
                 if command.client_order_id
@@ -373,13 +428,22 @@ class BybitExecutionClient(LiveExecutionClient):
                 else None
             )
 
+            self._log.debug(
+                f"About to call query_order: product_type={product_type}, "
+                f"instrument_id={pyo3_instrument_id}, "
+                f"client_order_id={pyo3_client_order_id}",
+                LogColor.CYAN,
+            )
+
             pyo3_report = await self._http_client.query_order(
+                account_id=self.pyo3_account_id,
                 product_type=product_type,
                 instrument_id=pyo3_instrument_id,
-                account_id=self.pyo3_account_id,
                 client_order_id=pyo3_client_order_id,
                 venue_order_id=pyo3_venue_order_id,
             )
+
+            self._log.debug(f"query_order returned: {pyo3_report}", LogColor.CYAN)
 
             if pyo3_report is None:
                 self._log.warning(f"No order status report found for {command.client_order_id!r}")
@@ -388,6 +452,29 @@ class BybitExecutionClient(LiveExecutionClient):
             report = OrderStatusReport.from_pyo3(pyo3_report)
             self._log.debug(f"Received {report}", LogColor.MAGENTA)
             return report
+        except ValueError as exc:
+            if "request canceled" in str(exc).lower():
+                self._log.debug("OrderStatusReport query cancelled during shutdown")
+            elif "not found in cache" in str(exc):
+                self._log.warning(
+                    f"Instrument {command.instrument_id} not in cache when querying order {command.client_order_id!r} - "
+                    "order may have been placed before instruments were cached",
+                    LogColor.YELLOW,
+                )
+            elif "must be initialized" in str(exc):
+                self._log.error(
+                    f"PyO3 field initialization error querying order {command.client_order_id!r}: {exc}. "
+                    f"This may indicate an instrument caching issue for {command.instrument_id}",
+                )
+            else:
+                exc_type, exc_value, exc_tb = sys.exc_info()
+                tb_lines = traceback.format_exception(exc_type, exc_value, exc_tb)
+                full_trace = "".join(tb_lines)
+                self._log.error(
+                    f"Failed to generate OrderStatusReport for {command.client_order_id!r}: {exc}\n"
+                    f"Full traceback:\n{full_trace}",
+                )
+            return None
         except Exception as e:
             self._log.exception(
                 f"Failed to generate OrderStatusReport for {command.client_order_id!r}",
@@ -427,9 +514,9 @@ class BybitExecutionClient(LiveExecutionClient):
                     if end_dt:
                         end_ms = int(end_dt.timestamp() * 1000)
 
-                response = await self._http_client.request_fill_reports(  # type: ignore
-                    product_type=product_type,
+                response = await self._http_client.request_fill_reports(
                     account_id=self.pyo3_account_id,
+                    product_type=product_type,
                     instrument_id=pyo3_instrument_id,
                     start=start_ms,
                     end=end_ms,
@@ -459,16 +546,17 @@ class BybitExecutionClient(LiveExecutionClient):
         reports: list[PositionStatusReport] = []
 
         try:
-            for product_type in self._product_types:
-                pyo3_instrument_id = None
-                if command.instrument_id:
-                    pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(
-                        command.instrument_id.value,
-                    )
+            # Extract instrument_id if provided
+            pyo3_instrument_id = None
+            if command.instrument_id:
+                pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(
+                    command.instrument_id.value,
+                )
 
-                response = await self._http_client.request_position_status_reports(  # type: ignore
-                    product_type=product_type,
+            for product_type in self._product_types:
+                response = await self._http_client.request_position_status_reports(
                     account_id=self.pyo3_account_id,
+                    product_type=product_type,
                     instrument_id=pyo3_instrument_id,
                 )
                 pyo3_reports.extend(response)
@@ -478,7 +566,14 @@ class BybitExecutionClient(LiveExecutionClient):
                 self._log.debug(f"Received {report}", LogColor.MAGENTA)
                 reports.append(report)
         except Exception as e:
-            self._log.exception("Failed to generate PositionStatusReports", e)
+            exc_type, exc_value, exc_tb = sys.exc_info()
+            # Format the full traceback without any line collapsing
+            tb_lines = traceback.format_exception(exc_type, exc_value, exc_tb)
+            full_trace = "".join(tb_lines)
+            self._log.error(
+                f"Failed to generate PositionStatusReports: {e}\n"
+                f"Full traceback (all lines):\n{full_trace}",
+            )
 
         len_reports = len(reports)
         plural = "" if len_reports == 1 else "s"
@@ -522,13 +617,13 @@ class BybitExecutionClient(LiveExecutionClient):
         if hasattr(order, "trigger_price") and order.trigger_price is not None:
             pyo3_trigger_price = nautilus_pyo3.Price.from_str(str(order.trigger_price))
 
-        # Determine product type (simplified - use first)
+        # FIXME: Determine product type (simplified - use first)
         product_type = self._product_types[0] if self._product_types else BybitProductType.LINEAR
 
         try:
             if self._use_ws_trade_api and self._ws_trade_client:
                 # Submit via WebSocket
-                await self._ws_trade_client.submit_order(  # type: ignore
+                await self._ws_trade_client.submit_order(
                     product_type=product_type,
                     instrument_id=pyo3_instrument_id,
                     client_order_id=pyo3_client_order_id,
@@ -605,7 +700,7 @@ class BybitExecutionClient(LiveExecutionClient):
         )
         pyo3_price = nautilus_pyo3.Price.from_str(str(command.price)) if command.price else None
 
-        # Determine product type
+        # FIXME: Determine product type
         product_type = self._product_types[0] if self._product_types else BybitProductType.LINEAR
 
         try:
@@ -666,7 +761,7 @@ class BybitExecutionClient(LiveExecutionClient):
             else None
         )
 
-        # Determine product type
+        # FIXME: Determine product type
         product_type = self._product_types[0] if self._product_types else BybitProductType.LINEAR
 
         try:
@@ -701,14 +796,13 @@ class BybitExecutionClient(LiveExecutionClient):
         # Convert to PyO3 types
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(command.instrument_id.value)
 
-        # Determine product type
+        # FIXME: Determine product type
         product_type = self._product_types[0] if self._product_types else BybitProductType.LINEAR
 
         try:
             reports = await self._http_client.cancel_all_orders(
                 product_type=product_type,
                 instrument_id=pyo3_instrument_id,
-                account_id=self.pyo3_account_id,
             )
 
             for pyo3_report in reports:
@@ -746,11 +840,11 @@ class BybitExecutionClient(LiveExecutionClient):
             self._log.debug(f"Received unhandled message type: {type(msg)}")
 
     def _handle_account_state(self, msg: nautilus_pyo3.AccountState) -> None:
-        account_state = AccountState.from_pyo3(msg)
+        account_state = AccountState.from_dict(msg.to_dict())
         self.generate_account_state(
             balances=account_state.balances,
             margins=account_state.margins,
-            reported=True,
+            reported=account_state.is_reported,
             ts_event=account_state.ts_event,
         )
 
@@ -766,17 +860,159 @@ class BybitExecutionClient(LiveExecutionClient):
         event = OrderModifyRejected.from_pyo3(msg)
         self._send_order_event(event)
 
-    def _handle_order_status_report_pyo3(self, msg: nautilus_pyo3.OrderStatusReport) -> None:
-        report = OrderStatusReport.from_pyo3(msg)
-        self._log.debug(f"Received {report}", LogColor.MAGENTA)
-        self._send_order_status_report(report)
+    def _handle_order_status_report_pyo3(  # noqa: C901 (too complex)
+        self,
+        pyo3_report: nautilus_pyo3.OrderStatusReport,
+    ) -> None:
+        report = OrderStatusReport.from_pyo3(pyo3_report)
 
-    def _handle_fill_report_pyo3(self, msg: nautilus_pyo3.FillReport) -> None:
-        report = FillReport.from_pyo3(msg)
-        self._log.debug(f"Received {report}", LogColor.MAGENTA)
-        self.generate_fill_report(report)
+        if self._is_external_order(report.client_order_id):
+            self._send_order_status_report(report)
+            return
+
+        order = self._cache.order(report.client_order_id)
+        if order is None:
+            self._log.error(
+                f"Cannot process order status report - order for {report.client_order_id!r} not found",
+            )
+            return
+
+        if order.linked_order_ids is not None:
+            report.linked_order_ids = list(order.linked_order_ids)
+
+        if report.order_status == OrderStatus.REJECTED:
+            pass  # Handled by submit_order
+        elif report.order_status == OrderStatus.ACCEPTED:
+            if is_order_updated(order, report):
+                self.generate_order_updated(
+                    strategy_id=order.strategy_id,
+                    instrument_id=report.instrument_id,
+                    client_order_id=report.client_order_id,
+                    venue_order_id=report.venue_order_id,
+                    quantity=report.quantity,
+                    price=report.price,
+                    trigger_price=report.trigger_price,
+                    ts_event=report.ts_last,
+                )
+            else:
+                self.generate_order_accepted(
+                    strategy_id=order.strategy_id,
+                    instrument_id=report.instrument_id,
+                    client_order_id=report.client_order_id,
+                    venue_order_id=report.venue_order_id,
+                    ts_event=report.ts_last,
+                )
+        elif report.order_status == OrderStatus.PENDING_CANCEL:
+            if order.status == OrderStatus.PENDING_CANCEL:
+                self._log.debug(
+                    f"Received PENDING_CANCEL status for {report.client_order_id!r} - "
+                    "order already in pending cancel state locally",
+                )
+            else:
+                self._log.warning(
+                    f"Received PENDING_CANCEL status for {report.client_order_id!r} - "
+                    f"order status {order.status_string()}",
+                )
+        elif report.order_status == OrderStatus.CANCELED:
+            # Check if this is a post-only order that was canceled (BitMEX specific behavior)
+            # BitMEX cancels post-only orders instead of rejecting them when they would cross the spread
+            # The specific message is "Order had execInst of ParticipateDoNotInitiate"
+            is_post_only_rejection = (
+                report.cancel_reason and "ParticipateDoNotInitiate" in report.cancel_reason
+            )
+
+            if is_post_only_rejection:
+                self.generate_order_rejected(
+                    strategy_id=order.strategy_id,
+                    instrument_id=report.instrument_id,
+                    client_order_id=report.client_order_id,
+                    reason=report.cancel_reason,
+                    ts_event=report.ts_last,
+                    due_post_only=True,
+                )
+            else:
+                self.generate_order_canceled(
+                    strategy_id=order.strategy_id,
+                    instrument_id=report.instrument_id,
+                    client_order_id=report.client_order_id,
+                    venue_order_id=report.venue_order_id,
+                    ts_event=report.ts_last,
+                )
+        elif report.order_status == OrderStatus.EXPIRED:
+            self.generate_order_expired(
+                strategy_id=order.strategy_id,
+                instrument_id=report.instrument_id,
+                client_order_id=report.client_order_id,
+                venue_order_id=report.venue_order_id,
+                ts_event=report.ts_last,
+            )
+        elif report.order_status == OrderStatus.TRIGGERED:
+            self.generate_order_triggered(
+                strategy_id=order.strategy_id,
+                instrument_id=report.instrument_id,
+                client_order_id=report.client_order_id,
+                venue_order_id=report.venue_order_id,
+                ts_event=report.ts_last,
+            )
+        else:
+            # Fills should be handled from FillReports
+            self._log.debug(f"Received unhandled OrderStatusReport: {report}")
+
+    def _handle_fill_report_pyo3(self, pyo3_report: nautilus_pyo3.FillReport) -> None:
+        report = FillReport.from_pyo3(pyo3_report)
+
+        if self._is_external_order(report.client_order_id):
+            self._send_fill_report(report)
+            return
+
+        order = self._cache.order(report.client_order_id)
+        if order is None:
+            self._log.error(
+                f"Cannot process fill report - order for {report.client_order_id!r} not found",
+            )
+            return
+
+        instrument = self._cache.instrument(order.instrument_id)
+        if instrument is None:
+            self._log.error(
+                f"Cannot process fill report - instrument {order.instrument_id} not found",
+            )
+            return
+
+        self.generate_order_filled(
+            strategy_id=order.strategy_id,
+            instrument_id=order.instrument_id,
+            client_order_id=order.client_order_id,
+            venue_order_id=report.venue_order_id,
+            venue_position_id=report.venue_position_id,
+            trade_id=report.trade_id,
+            order_side=order.side,
+            order_type=order.order_type,
+            last_qty=report.last_qty,
+            last_px=report.last_px,
+            quote_currency=instrument.quote_currency,
+            commission=report.commission,
+            liquidity_side=report.liquidity_side,
+            ts_event=report.ts_event,
+        )
 
     def _handle_position_status_report_pyo3(self, msg: nautilus_pyo3.PositionStatusReport) -> None:
-        report = PositionStatusReport.from_pyo3(msg)
-        self._log.debug(f"Received {report}", LogColor.MAGENTA)
-        self.generate_position_status_report(report)
+        _report = PositionStatusReport.from_pyo3(msg)
+        self._log.debug(f"Received {_report}", LogColor.MAGENTA)
+
+    def _is_external_order(self, client_order_id: ClientOrderId) -> bool:
+        return not client_order_id or not self._cache.strategy_id_for_order(client_order_id)
+
+
+def is_order_updated(order: Order, report: OrderStatusReport) -> bool:
+    if order.has_price and report.price and order.price != report.price:
+        return True
+
+    if (
+        order.has_trigger_price
+        and report.trigger_price
+        and order.trigger_price != report.trigger_price
+    ):
+        return True
+
+    return order.quantity != report.quantity

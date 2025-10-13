@@ -5733,6 +5733,64 @@ class BybitHttpClient:
         product_type: BybitProductType,
         symbol: str | None = None,
     ) -> list[Instrument]: ...
+    async def request_trades(
+        self,
+        account_id: AccountId,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId,
+        limit: int | None = None,
+    ) -> list[TradeTick]: ...
+    async def request_bars(
+        self,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId,
+        bar_type: BarType,
+        start_ms: int | None = None,
+        end_ms: int | None = None,
+        limit: int | None = None,
+    ) -> list[Bar]: ...
+    async def request_fee_rates(
+        self,
+        account_type: BybitAccountType,
+        account_id: AccountId,
+        instrument_id: InstrumentId | None = None,
+    ) -> list[Any]: ...
+    async def request_account_state(
+        self,
+        account_type: BybitAccountType,
+        account_id: AccountId,
+    ) -> AccountState: ...
+    async def request_order_status_reports(
+        self,
+        account_id: AccountId,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId | None = None,
+        open_only: bool = False,
+        limit: int | None = None,
+    ) -> list[OrderStatusReport]: ...
+    async def request_fill_reports(
+        self,
+        account_id: AccountId,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId | None = None,
+        start: int | None = None,
+        end: int | None = None,
+        limit: int | None = None,
+    ) -> list[FillReport]: ...
+    async def request_position_status_reports(
+        self,
+        account_id: AccountId,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId | None = None,
+    ) -> list[PositionStatusReport]: ...
+    async def query_order(
+        self,
+        account_id: AccountId,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId | None = None,
+        venue_order_id: VenueOrderId | None = None,
+    ) -> OrderStatusReport | None: ...
     async def submit_order(
         self,
         product_type: BybitProductType,
@@ -5756,7 +5814,6 @@ class BybitHttpClient:
         self,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
-        account_id: AccountId,
     ) -> list[OrderStatusReport]: ...
     async def modify_order(
         self,
@@ -5767,60 +5824,7 @@ class BybitHttpClient:
         quantity: Quantity | None = None,
         price: Price | None = None,
     ) -> OrderStatusReport: ...
-    async def query_order(
-        self,
-        product_type: BybitProductType,
-        instrument_id: InstrumentId,
-        account_id: AccountId,
-        client_order_id: ClientOrderId | None = None,
-        venue_order_id: VenueOrderId | None = None,
-    ) -> OrderStatusReport | None: ...
-    async def request_order_status_reports(
-        self,
-        product_type: BybitProductType,
-        instrument_id: InstrumentId | None = None,
-        open_only: bool = False,
-        limit: int | None = None,
-    ) -> list[OrderStatusReport]: ...
-    async def request_trades(
-        self,
-        product_type: BybitProductType,
-        instrument_id: InstrumentId,
-        limit: int | None = None,
-    ) -> list[TradeTick]: ...
-    async def request_bars(
-        self,
-        product_type: BybitProductType,
-        instrument_id: InstrumentId,
-        bar_type: BarType,
-        start_ms: int | None = None,
-        end_ms: int | None = None,
-        limit: int | None = None,
-    ) -> list[Bar]: ...
-    async def request_fill_reports(
-        self,
-        product_type: BybitProductType,
-        instrument_id: InstrumentId | None = None,
-        start: int | None = None,
-        end: int | None = None,
-        limit: int | None = None,
-    ) -> list[FillReport]: ...
-    async def request_position_status_reports(
-        self,
-        product_type: BybitProductType,
-        instrument_id: InstrumentId | None = None,
-    ) -> list[PositionStatusReport]: ...
-    async def request_account_state(
-        self,
-        account_type: BybitAccountType,
-        account_id: AccountId,
-    ) -> AccountState: ...
-    async def request_fee_rates(
-        self,
-        account_type: BybitAccountType,
-        account_id: AccountId,
-        instrument_id: InstrumentId | None = None,
-    ) -> list[Any]: ...
+
 
 class BybitWebSocketClient:
     @staticmethod
@@ -5847,6 +5851,8 @@ class BybitWebSocketClient:
         heartbeat: int | None = None,
     ) -> BybitWebSocketClient: ...
     def subscription_count(self) -> int: ...
+    def set_account_id(self, account_id: AccountId) -> None: ...
+    def add_instrument(self, instrument: Instrument) -> None: ...
     async def is_active(self) -> bool: ...
     async def connect(self, callback: Any) -> None: ...
     async def close(self) -> None: ...
@@ -5879,6 +5885,7 @@ class BybitWebSocketClient:
         quantity: Quantity,
         time_in_force: TimeInForce | None = None,
         price: Price | None = None,
+        trigger_price: Price | None = None,
         post_only: bool | None = None,
         reduce_only: bool | None = None,
     ) -> None: ...

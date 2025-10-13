@@ -185,6 +185,7 @@ config_tester = ExecTesterConfig(
     reduce_only_on_stop=False,  # Not supported for Bybit SPOT
     cancel_orders_on_stop=True,  # Clean up for this test
     close_positions_on_stop=True,  # Clean up for this test
+    # use_batch_cancel_on_stop=True,
     log_data=False,
     log_rejected_due_post_only_as_warning=False,
 )

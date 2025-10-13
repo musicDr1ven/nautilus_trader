@@ -95,10 +95,13 @@ class BybitDataClient(LiveMarketDataClient):
 
         # Configuration
         self._config = config
-        self._log.info(
-            f"config.product_types={[str(p) for p in config.product_types]}",
-            LogColor.BLUE,
-        )
+        self._product_types = list(config.product_types)
+        self._bars_timestamp_on_close = config.bars_timestamp_on_close
+
+        self._log.info(f"Product types: {[str(p) for p in self._product_types]}", LogColor.BLUE)
+        self._log.info(f"{config.update_instruments_interval_mins=}", LogColor.BLUE)
+        self._log.info(f"{config.recv_window_ms=:_}", LogColor.BLUE)
+        self._log.info(f"{config.bars_timestamp_on_close=}", LogColor.BLUE)
 
         # HTTP API
         self._http_client = client
@@ -171,7 +174,7 @@ class BybitDataClient(LiveMarketDataClient):
             self._http_client.add_instrument(inst)
             # Also add instruments to all websocket clients
             for ws_client in self._ws_clients.values():
-                ws_client.add_instrument(inst)  # type: ignore[attr-defined]
+                ws_client.add_instrument(inst)
 
         self._log.debug("Cached instruments", LogColor.MAGENTA)
 

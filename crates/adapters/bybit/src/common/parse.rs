@@ -211,6 +211,18 @@ pub fn parse_linear_instrument(
     ts_event: UnixNanos,
     ts_init: UnixNanos,
 ) -> anyhow::Result<InstrumentAny> {
+    // Validate required fields
+    anyhow::ensure!(
+        !definition.base_coin.is_empty(),
+        "base_coin is empty for symbol '{}'",
+        definition.symbol
+    );
+    anyhow::ensure!(
+        !definition.quote_coin.is_empty(),
+        "quote_coin is empty for symbol '{}'",
+        definition.symbol
+    );
+
     let base_currency = get_currency(definition.base_coin.as_str());
     let quote_currency = get_currency(definition.quote_coin.as_str());
     let settlement_currency = resolve_settlement_currency(
@@ -325,6 +337,18 @@ pub fn parse_inverse_instrument(
     ts_event: UnixNanos,
     ts_init: UnixNanos,
 ) -> anyhow::Result<InstrumentAny> {
+    // Validate required fields
+    anyhow::ensure!(
+        !definition.base_coin.is_empty(),
+        "base_coin is empty for symbol '{}'",
+        definition.symbol
+    );
+    anyhow::ensure!(
+        !definition.quote_coin.is_empty(),
+        "quote_coin is empty for symbol '{}'",
+        definition.symbol
+    );
+
     let base_currency = get_currency(definition.base_coin.as_str());
     let quote_currency = get_currency(definition.quote_coin.as_str());
     let settlement_currency = resolve_settlement_currency(
