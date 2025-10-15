@@ -5793,6 +5793,7 @@ class BybitHttpClient:
     ) -> OrderStatusReport | None: ...
     async def submit_order(
         self,
+        account_id: AccountId,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
         client_order_id: ClientOrderId,
@@ -5805,6 +5806,7 @@ class BybitHttpClient:
     ) -> OrderStatusReport: ...
     async def cancel_order(
         self,
+        account_id: AccountId,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
         client_order_id: ClientOrderId | None = None,
@@ -5812,11 +5814,13 @@ class BybitHttpClient:
     ) -> OrderStatusReport: ...
     async def cancel_all_orders(
         self,
+        account_id: AccountId,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
     ) -> list[OrderStatusReport]: ...
     async def modify_order(
         self,
+        account_id: AccountId,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
         client_order_id: ClientOrderId | None = None,

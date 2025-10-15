@@ -638,6 +638,7 @@ class BybitExecutionClient(LiveExecutionClient):
             else:
                 # Submit via HTTP
                 await self._http_client.submit_order(
+                    account_id=self.pyo3_account_id,
                     product_type=product_type,
                     instrument_id=pyo3_instrument_id,
                     client_order_id=pyo3_client_order_id,
@@ -717,6 +718,7 @@ class BybitExecutionClient(LiveExecutionClient):
             else:
                 # Modify via HTTP
                 await self._http_client.modify_order(
+                    account_id=self.pyo3_account_id,
                     product_type=product_type,
                     instrument_id=pyo3_instrument_id,
                     client_order_id=pyo3_client_order_id,
@@ -776,6 +778,7 @@ class BybitExecutionClient(LiveExecutionClient):
             else:
                 # Cancel via HTTP
                 await self._http_client.cancel_order(
+                    account_id=self.pyo3_account_id,
                     product_type=product_type,
                     instrument_id=pyo3_instrument_id,
                     client_order_id=pyo3_client_order_id,
@@ -801,6 +804,7 @@ class BybitExecutionClient(LiveExecutionClient):
 
         try:
             reports = await self._http_client.cancel_all_orders(
+                account_id=self.pyo3_account_id,
                 product_type=product_type,
                 instrument_id=pyo3_instrument_id,
             )

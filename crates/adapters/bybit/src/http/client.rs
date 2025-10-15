@@ -724,6 +724,7 @@ impl BybitHttpInnerClient {
     #[allow(clippy::too_many_arguments)]
     pub async fn submit_order(
         &self,
+        account_id: AccountId,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
         client_order_id: ClientOrderId,
@@ -813,7 +814,6 @@ impl BybitHttpInnerClient {
             anyhow::bail!("Order rejected: {}", order.reject_reason);
         }
 
-        let account_id = AccountId::new("BYBIT");
         let ts_init = self.generate_ts_init();
 
         parse_order_status_report(&order, &instrument, account_id, ts_init)
@@ -830,6 +830,7 @@ impl BybitHttpInnerClient {
     /// - The API returns an error.
     pub async fn cancel_order(
         &self,
+        account_id: AccountId,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
         client_order_id: Option<ClientOrderId>,
@@ -884,7 +885,6 @@ impl BybitHttpInnerClient {
             .next()
             .ok_or_else(|| anyhow::anyhow!("No order returned in cancel response"))?;
 
-        let account_id = AccountId::new("BYBIT");
         let ts_init = self.generate_ts_init();
 
         parse_order_status_report(&order, &instrument, account_id, ts_init)
@@ -900,6 +900,7 @@ impl BybitHttpInnerClient {
     /// - The API returns an error.
     pub async fn cancel_all_orders(
         &self,
+        account_id: AccountId,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
     ) -> anyhow::Result<Vec<OrderStatusReport>> {
@@ -921,14 +922,13 @@ impl BybitHttpInnerClient {
         let mut query_params = BybitOrderHistoryParamsBuilder::default();
         query_params.category(product_type);
         query_params.symbol(bybit_symbol.raw_symbol().to_string());
-        query_params.limit(50);
+        query_params.limit(50u32);
 
         let query_params = query_params.build().map_err(|e| anyhow::anyhow!(e))?;
         let path = Self::build_path("/v5/order/history", &query_params)?;
         let order_response: BybitOrderHistoryResponse =
             self.send_request(Method::GET, &path, None, true).await?;
 
-        let account_id = AccountId::new("BYBIT");
         let ts_init = self.generate_ts_init();
 
         let mut reports = Vec::new();
@@ -952,8 +952,10 @@ impl BybitHttpInnerClient {
     /// - The order doesn't exist.
     /// - The order is already closed.
     /// - The API returns an error.
+    #[allow(clippy::too_many_arguments)]
     pub async fn modify_order(
         &self,
+        account_id: AccountId,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
         client_order_id: Option<ClientOrderId>,
@@ -1018,7 +1020,6 @@ impl BybitHttpInnerClient {
             .next()
             .ok_or_else(|| anyhow::anyhow!("No order returned after modification"))?;
 
-        let account_id = AccountId::new("BYBIT");
         let ts_init = self.generate_ts_init();
 
         parse_order_status_report(&order, &instrument, account_id, ts_init)
@@ -2037,6 +2038,7 @@ impl BybitHttpClient {
     #[allow(clippy::too_many_arguments)]
     pub async fn submit_order(
         &self,
+        account_id: AccountId,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
         client_order_id: ClientOrderId,
@@ -2049,6 +2051,7 @@ impl BybitHttpClient {
     ) -> anyhow::Result<OrderStatusReport> {
         self.inner
             .submit_order(
+                account_id,
                 product_type,
                 instrument_id,
                 client_order_id,
@@ -2072,8 +2075,10 @@ impl BybitHttpClient {
     /// - The order doesn't exist.
     /// - The order is already closed.
     /// - The API returns an error.
+    #[allow(clippy::too_many_arguments)]
     pub async fn modify_order(
         &self,
+        account_id: AccountId,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
         client_order_id: Option<ClientOrderId>,
@@ -2083,6 +2088,7 @@ impl BybitHttpClient {
     ) -> anyhow::Result<OrderStatusReport> {
         self.inner
             .modify_order(
+                account_id,
                 product_type,
                 instrument_id,
                 client_order_id,
@@ -2104,13 +2110,20 @@ impl BybitHttpClient {
     /// - The API returns an error.
     pub async fn cancel_order(
         &self,
+        account_id: AccountId,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
         client_order_id: Option<ClientOrderId>,
         venue_order_id: Option<VenueOrderId>,
     ) -> anyhow::Result<OrderStatusReport> {
         self.inner
-            .cancel_order(product_type, instrument_id, client_order_id, venue_order_id)
+            .cancel_order(
+                account_id,
+                product_type,
+                instrument_id,
+                client_order_id,
+                venue_order_id,
+            )
             .await
     }
 
@@ -2124,11 +2137,12 @@ impl BybitHttpClient {
     /// - The API returns an error.
     pub async fn cancel_all_orders(
         &self,
+        account_id: AccountId,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
     ) -> anyhow::Result<Vec<OrderStatusReport>> {
         self.inner
-            .cancel_all_orders(product_type, instrument_id)
+            .cancel_all_orders(account_id, product_type, instrument_id)
             .await
     }
 

@@ -130,6 +130,7 @@ impl BybitHttpClient {
 
     #[pyo3(name = "submit_order")]
     #[pyo3(signature = (
+        account_id,
         product_type,
         instrument_id,
         client_order_id,
@@ -144,6 +145,7 @@ impl BybitHttpClient {
     fn py_submit_order<'py>(
         &self,
         py: Python<'py>,
+        account_id: AccountId,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
         client_order_id: ClientOrderId,
@@ -159,6 +161,7 @@ impl BybitHttpClient {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let report = client
                 .submit_order(
+                    account_id,
                     product_type,
                     instrument_id,
                     client_order_id,
@@ -178,6 +181,7 @@ impl BybitHttpClient {
 
     #[pyo3(name = "modify_order")]
     #[pyo3(signature = (
+        account_id,
         product_type,
         instrument_id,
         client_order_id=None,
@@ -189,6 +193,7 @@ impl BybitHttpClient {
     fn py_modify_order<'py>(
         &self,
         py: Python<'py>,
+        account_id: AccountId,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
         client_order_id: Option<ClientOrderId>,
@@ -201,6 +206,7 @@ impl BybitHttpClient {
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let report = client
                 .modify_order(
+                    account_id,
                     product_type,
                     instrument_id,
                     client_order_id,
@@ -216,10 +222,11 @@ impl BybitHttpClient {
     }
 
     #[pyo3(name = "cancel_order")]
-    #[pyo3(signature = (product_type, instrument_id, client_order_id=None, venue_order_id=None))]
+    #[pyo3(signature = (account_id, product_type, instrument_id, client_order_id=None, venue_order_id=None))]
     fn py_cancel_order<'py>(
         &self,
         py: Python<'py>,
+        account_id: AccountId,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
         client_order_id: Option<ClientOrderId>,
@@ -229,7 +236,13 @@ impl BybitHttpClient {
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let report = client
-                .cancel_order(product_type, instrument_id, client_order_id, venue_order_id)
+                .cancel_order(
+                    account_id,
+                    product_type,
+                    instrument_id,
+                    client_order_id,
+                    venue_order_id,
+                )
                 .await
                 .map_err(to_pyvalue_err)?;
 
@@ -241,6 +254,7 @@ impl BybitHttpClient {
     fn py_cancel_all_orders<'py>(
         &self,
         py: Python<'py>,
+        account_id: AccountId,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
     ) -> PyResult<Bound<'py, PyAny>> {
@@ -248,7 +262,7 @@ impl BybitHttpClient {
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let reports = client
-                .cancel_all_orders(product_type, instrument_id)
+                .cancel_all_orders(account_id, product_type, instrument_id)
                 .await
                 .map_err(to_pyvalue_err)?;
 
