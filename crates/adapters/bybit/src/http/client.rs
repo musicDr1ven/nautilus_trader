@@ -21,7 +21,10 @@ use std::{
     collections::HashMap,
     fmt::Debug,
     num::NonZeroU32,
-    sync::{Arc, LazyLock, Mutex},
+    sync::{
+        Arc, LazyLock, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use nautilus_core::{
@@ -57,12 +60,13 @@ use super::{
     },
     query::{
         BybitAmendOrderParamsBuilder, BybitBatchAmendOrderEntryBuilder,
-        BybitBatchCancelOrderEntryBuilder, BybitBatchPlaceOrderEntryBuilder,
-        BybitCancelAllOrdersParamsBuilder, BybitCancelOrderParamsBuilder, BybitFeeRateParams,
-        BybitInstrumentsInfoParams, BybitKlinesParams, BybitKlinesParamsBuilder,
-        BybitOpenOrdersParamsBuilder, BybitOrderHistoryParamsBuilder, BybitPlaceOrderParamsBuilder,
-        BybitPositionListParams, BybitTickersParams, BybitTradeHistoryParams, BybitTradesParams,
-        BybitTradesParamsBuilder, BybitWalletBalanceParams,
+        BybitBatchCancelOrderEntryBuilder, BybitBatchCancelOrderParamsBuilder,
+        BybitBatchPlaceOrderEntryBuilder, BybitCancelAllOrdersParamsBuilder,
+        BybitCancelOrderParamsBuilder, BybitFeeRateParams, BybitInstrumentsInfoParams,
+        BybitKlinesParams, BybitKlinesParamsBuilder, BybitOpenOrdersParamsBuilder,
+        BybitOrderHistoryParamsBuilder, BybitPlaceOrderParamsBuilder, BybitPositionListParams,
+        BybitTickersParams, BybitTradeHistoryParams, BybitTradesParams, BybitTradesParamsBuilder,
+        BybitWalletBalanceParams,
     },
 };
 use crate::{
@@ -106,6 +110,7 @@ pub struct BybitHttpInnerClient {
     retry_manager: RetryManager<BybitHttpError>,
     cancellation_token: CancellationToken,
     instruments_cache: Arc<Mutex<HashMap<Ustr, InstrumentAny>>>,
+    use_spot_position_reports: AtomicBool,
 }
 
 impl Default for BybitHttpInnerClient {
@@ -179,6 +184,7 @@ impl BybitHttpInnerClient {
             retry_manager,
             cancellation_token: CancellationToken::new(),
             instruments_cache: Arc::new(Mutex::new(HashMap::new())),
+            use_spot_position_reports: AtomicBool::new(false),
         })
     }
 
@@ -227,6 +233,7 @@ impl BybitHttpInnerClient {
             retry_manager,
             cancellation_token: CancellationToken::new(),
             instruments_cache: Arc::new(Mutex::new(HashMap::new())),
+            use_spot_position_reports: AtomicBool::new(false),
         })
     }
 
@@ -707,6 +714,136 @@ impl BybitHttpInnerClient {
         get_atomic_clock_realtime().get_time_ns()
     }
 
+    /// Set whether to generate position reports from wallet balances for SPOT positions.
+    pub fn set_use_spot_position_reports(&self, use_spot_position_reports: bool) {
+        self.use_spot_position_reports
+            .store(use_spot_position_reports, Ordering::Relaxed);
+    }
+
+    /// Generate SPOT position reports from wallet balances.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - The wallet balance request fails.
+    /// - Parsing fails.
+    async fn generate_spot_position_reports_from_wallet(
+        &self,
+        account_id: AccountId,
+        instrument_id: Option<InstrumentId>,
+    ) -> anyhow::Result<Vec<PositionStatusReport>> {
+        use std::str::FromStr;
+
+        use rust_decimal::Decimal;
+
+        let params = BybitWalletBalanceParams {
+            account_type: BybitAccountType::Unified,
+            coin: None,
+        };
+
+        let response = self.http_get_wallet_balance(&params).await?;
+        let ts_init = self.generate_ts_init();
+
+        // Build lookup table of wallet balances by coin
+        let mut wallet_by_coin: HashMap<Ustr, Decimal> = HashMap::new();
+
+        for wallet in &response.result.list {
+            for coin_balance in &wallet.coin {
+                let balance =
+                    Decimal::from_str(&coin_balance.wallet_balance).unwrap_or(Decimal::ZERO);
+                *wallet_by_coin
+                    .entry(coin_balance.coin)
+                    .or_insert(Decimal::ZERO) += balance;
+            }
+        }
+
+        let mut reports = Vec::new();
+        let cache = self.instruments_cache.lock().unwrap();
+
+        if let Some(instrument_id) = instrument_id {
+            // Generate report for specific instrument
+            if let Some(instrument) = cache.get(&instrument_id.symbol.inner()) {
+                let base_currency = instrument
+                    .base_currency()
+                    .expect("SPOT instrument should have base currency");
+                let coin = base_currency.code;
+                let wallet_balance = wallet_by_coin.get(&coin).copied().unwrap_or(Decimal::ZERO);
+
+                // Create quantity using instrument's size precision
+                // Handle negative balances (borrowed assets) by using absolute value
+                let balance_f64 = wallet_balance.to_string().parse::<f64>().unwrap_or(0.0);
+                let quantity = Quantity::new(balance_f64.abs(), instrument.size_precision());
+
+                // Determine position side based on balance sign
+                let side = if balance_f64 > 0.0 {
+                    nautilus_model::enums::PositionSideSpecified::Long
+                } else if balance_f64 < 0.0 {
+                    nautilus_model::enums::PositionSideSpecified::Short
+                } else {
+                    nautilus_model::enums::PositionSideSpecified::Flat
+                };
+
+                let report = PositionStatusReport::new(
+                    account_id,
+                    instrument_id,
+                    side,
+                    quantity,
+                    ts_init,
+                    ts_init,
+                    None,
+                    None,
+                    None,
+                );
+
+                reports.push(report);
+            }
+        } else {
+            // Generate reports for all SPOT instruments with non-zero balance
+            for (symbol, instrument) in cache.iter() {
+                // Only consider SPOT instruments
+                if !symbol.as_str().ends_with("-SPOT") {
+                    continue;
+                }
+
+                let base_currency = match instrument.base_currency() {
+                    Some(currency) => currency,
+                    None => continue,
+                };
+
+                let coin = base_currency.code;
+                let wallet_balance = wallet_by_coin.get(&coin).copied().unwrap_or(Decimal::ZERO);
+
+                if wallet_balance.is_zero() {
+                    continue;
+                }
+
+                // Create quantity using instrument's size precision
+                let balance_f64 = wallet_balance.to_string().parse::<f64>().unwrap_or(0.0);
+                let quantity = Quantity::new(balance_f64, instrument.size_precision());
+
+                if quantity.raw == 0 {
+                    continue;
+                }
+
+                let report = PositionStatusReport::new(
+                    account_id,
+                    instrument.id(),
+                    nautilus_model::enums::PositionSideSpecified::Long,
+                    quantity,
+                    ts_init,
+                    ts_init,
+                    None,
+                    None,
+                    None,
+                );
+
+                reports.push(report);
+            }
+        }
+
+        Ok(reports)
+    }
+
     // =========================================================================
     // High-level domain methods
     // =========================================================================
@@ -890,6 +1027,108 @@ impl BybitHttpInnerClient {
         parse_order_status_report(&order, &instrument, account_id, ts_init)
     }
 
+    /// Batch cancel multiple orders.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - The request fails.
+    /// - Any of the orders don't exist.
+    /// - The API returns an error.
+    pub async fn batch_cancel_orders(
+        &self,
+        account_id: AccountId,
+        product_type: BybitProductType,
+        instrument_ids: Vec<InstrumentId>,
+        client_order_ids: Vec<Option<ClientOrderId>>,
+        venue_order_ids: Vec<Option<VenueOrderId>>,
+    ) -> anyhow::Result<Vec<OrderStatusReport>> {
+        if instrument_ids.len() != client_order_ids.len()
+            || instrument_ids.len() != venue_order_ids.len()
+        {
+            anyhow::bail!(
+                "instrument_ids, client_order_ids, and venue_order_ids must have the same length"
+            );
+        }
+
+        if instrument_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        if instrument_ids.len() > 20 {
+            anyhow::bail!("Batch cancel limit is 20 orders per request");
+        }
+
+        let mut cancel_entries = Vec::new();
+
+        for ((instrument_id, client_order_id), venue_order_id) in instrument_ids
+            .iter()
+            .zip(client_order_ids.iter())
+            .zip(venue_order_ids.iter())
+        {
+            let bybit_symbol = BybitSymbol::new(instrument_id.symbol.as_str())?;
+            let mut cancel_entry = BybitBatchCancelOrderEntryBuilder::default();
+            cancel_entry.symbol(bybit_symbol.raw_symbol().to_string());
+
+            if let Some(venue_order_id) = venue_order_id {
+                cancel_entry.order_id(venue_order_id.to_string());
+            } else if let Some(client_order_id) = client_order_id {
+                cancel_entry.order_link_id(client_order_id.to_string());
+            } else {
+                anyhow::bail!(
+                    "Either client_order_id or venue_order_id must be provided for each order"
+                );
+            }
+
+            cancel_entries.push(cancel_entry.build().map_err(|e| anyhow::anyhow!(e))?);
+        }
+
+        let mut params = BybitBatchCancelOrderParamsBuilder::default();
+        params.category(product_type);
+        params.request(cancel_entries);
+
+        let params = params.build().map_err(|e| anyhow::anyhow!(e))?;
+        let body = serde_json::to_vec(&params)?;
+
+        let _response: BybitPlaceOrderResponse = self
+            .send_request(Method::POST, "/v5/order/cancel-batch", Some(body), true)
+            .await?;
+
+        // Query each order to get full details after cancellation
+        let mut reports = Vec::new();
+        for (instrument_id, (client_order_id, venue_order_id)) in instrument_ids
+            .iter()
+            .zip(client_order_ids.iter().zip(venue_order_ids.iter()))
+        {
+            let instrument = self.instrument_from_cache(&instrument_id.symbol)?;
+            let bybit_symbol = BybitSymbol::new(instrument_id.symbol.as_str())?;
+
+            let mut query_params = BybitOpenOrdersParamsBuilder::default();
+            query_params.category(product_type);
+            query_params.symbol(bybit_symbol.raw_symbol().to_string());
+
+            if let Some(venue_order_id) = venue_order_id {
+                query_params.order_id(venue_order_id.to_string());
+            } else if let Some(client_order_id) = client_order_id {
+                query_params.order_link_id(client_order_id.to_string());
+            }
+
+            let query_params = query_params.build().map_err(|e| anyhow::anyhow!(e))?;
+            let path = Self::build_path("/v5/order/history", &query_params)?;
+            let order_response: BybitOrderHistoryResponse =
+                self.send_request(Method::GET, &path, None, true).await?;
+
+            if let Some(order) = order_response.result.list.into_iter().next() {
+                let ts_init = self.generate_ts_init();
+                let report = parse_order_status_report(&order, &instrument, account_id, ts_init)?;
+                reports.push(report);
+            }
+        }
+
+        Ok(reports)
+    }
+
     /// Cancel all orders for an instrument.
     ///
     /// # Errors
@@ -1066,11 +1305,37 @@ impl BybitHttpInnerClient {
         let params = params.build().map_err(|e| anyhow::anyhow!(e))?;
         let path = Self::build_path("/v5/order/realtime", &params)?;
 
-        let response: BybitOpenOrdersResponse =
+        let mut response: BybitOpenOrdersResponse =
             self.send_request(Method::GET, &path, None, true).await?;
 
+        // If not found in open orders, check order history
         if response.result.list.is_empty() {
-            return Ok(None);
+            tracing::debug!("Order not found in open orders, checking order history");
+
+            let mut history_params = BybitOrderHistoryParamsBuilder::default();
+            history_params.category(product_type);
+            history_params.symbol(bybit_symbol.raw_symbol().to_string());
+
+            if let Some(venue_order_id) = venue_order_id {
+                history_params.order_id(venue_order_id.to_string());
+            } else if let Some(client_order_id) = client_order_id {
+                history_params.order_link_id(client_order_id.to_string());
+            }
+
+            let history_params = history_params.build().map_err(|e| anyhow::anyhow!(e))?;
+            let history_path = Self::build_path("/v5/order/history", &history_params)?;
+
+            let history_response: BybitOrderHistoryResponse = self
+                .send_request(Method::GET, &history_path, None, true)
+                .await?;
+
+            if history_response.result.list.is_empty() {
+                tracing::debug!("Order not found in order history either");
+                return Ok(None);
+            }
+
+            // Move the order from history response to the response list
+            response.result.list = history_response.result.list;
         }
 
         let order = &response.result.list[0];
@@ -1633,6 +1898,18 @@ impl BybitHttpInnerClient {
         product_type: BybitProductType,
         instrument_id: Option<InstrumentId>,
     ) -> anyhow::Result<Vec<PositionStatusReport>> {
+        // Handle SPOT position reports via wallet balances if flag is enabled
+        if product_type == BybitProductType::Spot {
+            if self.use_spot_position_reports.load(Ordering::Relaxed) {
+                return self
+                    .generate_spot_position_reports_from_wallet(account_id, instrument_id)
+                    .await;
+            } else {
+                // Return empty vector when SPOT position reports are disabled
+                return Ok(Vec::new());
+            }
+        }
+
         let ts_init = self.generate_ts_init();
         let mut reports = Vec::new();
 
@@ -1822,6 +2099,12 @@ impl BybitHttpClient {
     #[must_use]
     pub fn credential(&self) -> Option<&Credential> {
         self.inner.credential()
+    }
+
+    /// Set whether to generate position reports from wallet balances for SPOT positions.
+    pub fn set_use_spot_position_reports(&self, use_spot_position_reports: bool) {
+        self.inner
+            .set_use_spot_position_reports(use_spot_position_reports);
     }
 
     /// Cancel all pending HTTP requests.
@@ -2123,6 +2406,34 @@ impl BybitHttpClient {
                 instrument_id,
                 client_order_id,
                 venue_order_id,
+            )
+            .await
+    }
+
+    /// Batch cancel multiple orders.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - The request fails.
+    /// - Any of the orders don't exist.
+    /// - The API returns an error.
+    pub async fn batch_cancel_orders(
+        &self,
+        account_id: AccountId,
+        product_type: BybitProductType,
+        instrument_ids: Vec<InstrumentId>,
+        client_order_ids: Vec<Option<ClientOrderId>>,
+        venue_order_ids: Vec<Option<VenueOrderId>>,
+    ) -> anyhow::Result<Vec<OrderStatusReport>> {
+        self.inner
+            .batch_cancel_orders(
+                account_id,
+                product_type,
+                instrument_ids,
+                client_order_ids,
+                venue_order_ids,
             )
             .await
     }

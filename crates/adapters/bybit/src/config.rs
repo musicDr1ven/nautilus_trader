@@ -166,6 +166,8 @@ pub struct BybitExecClientConfig {
     pub recv_window_ms: Option<u64>,
     /// Optional account identifier to associate with the execution client.
     pub account_id: Option<AccountId>,
+    /// Whether to generate position reports from wallet balances for SPOT positions.
+    pub use_spot_position_reports: bool,
 }
 
 impl Default for BybitExecClientConfig {
@@ -185,6 +187,7 @@ impl Default for BybitExecClientConfig {
             heartbeat_interval_secs: Some(5),
             recv_window_ms: Some(5_000),
             account_id: None,
+            use_spot_position_reports: false,
         }
     }
 }

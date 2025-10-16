@@ -102,11 +102,8 @@ class BybitExecClientConfig(LiveExecClientConfig, frozen=True):
         (this is useful if managing GTD orders locally).
     use_ws_execution_fast : bool, default False
         If use fast execution stream.
-    use_ws_trade_api : bool, default False
-        If the client is using websocket to send order requests.
     use_http_batch_api : bool, default False
-        If the client is using http api to send batch order requests.
-        Effective only when `use_ws_trade_api` is set to `True`.
+        If the client is using http api to send batch order requests (deprecated).
     use_spot_position_reports : bool, default False
         If True, wallet balances for SPOT instruments will be reported as positions:
         - Positive balances are reported as LONG positions.
@@ -151,7 +148,6 @@ class BybitExecClientConfig(LiveExecClientConfig, frozen=True):
     testnet: bool = False
     use_gtd: bool = False  # Not supported on Bybit
     use_ws_execution_fast: bool = False
-    use_ws_trade_api: bool = False
     use_http_batch_api: bool = False
     ignore_uncached_instrument_executions: bool = False
     max_retries: PositiveInt | None = None

@@ -19,6 +19,7 @@
 
 use std::{
     fmt,
+    num::NonZero,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -28,9 +29,12 @@ use std::{
 
 use dashmap::DashMap;
 use nautilus_common::runtime::get_runtime;
-use nautilus_core::{consts::NAUTILUS_USER_AGENT, time::get_atomic_clock_realtime};
+use nautilus_core::{
+    consts::NAUTILUS_USER_AGENT, nanos::UnixNanos, time::get_atomic_clock_realtime,
+};
 use nautilus_model::{
-    enums::{OrderSide, OrderType, TimeInForce},
+    data::{BarSpecification, BarType, Data},
+    enums::{AggregationSource, BarAggregation, OrderSide, OrderType, PriceType, TimeInForce},
     identifiers::{AccountId, ClientOrderId, InstrumentId, VenueOrderId},
     instruments::{Instrument, InstrumentAny},
     types::{Price, Quantity},
@@ -54,7 +58,7 @@ use crate::{
             BybitEnvironment, BybitOrderSide, BybitOrderType, BybitProductType, BybitTimeInForce,
             BybitTriggerType, BybitWsOrderRequestOp,
         },
-        parse::extract_raw_symbol,
+        parse::{extract_raw_symbol, make_bybit_symbol},
         symbol::BybitSymbol,
         urls::{bybit_ws_private_url, bybit_ws_public_url, bybit_ws_trade_url},
     },
@@ -67,9 +71,15 @@ use crate::{
             BybitAuthRequest, BybitSubscription, BybitWebSocketError, BybitWebSocketMessage,
             BybitWsAccountExecutionMsg, BybitWsAccountOrderMsg, BybitWsAccountPositionMsg,
             BybitWsAccountWalletMsg, BybitWsAmendOrderParams, BybitWsAuthResponse,
-            BybitWsCancelOrderParams, BybitWsHeader, BybitWsKlineMsg, BybitWsOrderbookDepthMsg,
-            BybitWsPlaceOrderParams, BybitWsRequest, BybitWsResponse, BybitWsSubscriptionMsg,
-            BybitWsTickerLinearMsg, BybitWsTickerOptionMsg, BybitWsTradeMsg,
+            BybitWsCancelOrderParams, BybitWsHeader, BybitWsKlineMsg, BybitWsOrderResponse,
+            BybitWsOrderbookDepthMsg, BybitWsPlaceOrderParams, BybitWsRequest, BybitWsResponse,
+            BybitWsSubscriptionMsg, BybitWsTickerLinearMsg, BybitWsTickerOptionMsg,
+            BybitWsTradeMsg, NautilusWsMessage,
+        },
+        parse::{
+            parse_kline_topic, parse_millis_i64, parse_orderbook_deltas, parse_ws_account_state,
+            parse_ws_fill_report, parse_ws_kline_bar, parse_ws_order_status_report,
+            parse_ws_position_status_report, parse_ws_trade_tick,
         },
         subscription::SubscriptionState,
     },
@@ -116,7 +126,7 @@ pub struct BybitWebSocketClient {
     auth_tracker: AuthTracker,
     heartbeat: Option<u64>,
     inner: Arc<RwLock<Option<WebSocketClient>>>,
-    rx: Option<tokio::sync::mpsc::UnboundedReceiver<BybitWebSocketMessage>>,
+    rx: Option<tokio::sync::mpsc::UnboundedReceiver<NautilusWsMessage>>,
     signal: Arc<AtomicBool>,
     task_handle: Option<tokio::task::JoinHandle<()>>,
     subscriptions: SubscriptionState,
@@ -343,7 +353,7 @@ impl BybitWebSocketClient {
             *guard = Some(client);
         }
 
-        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<BybitWebSocketMessage>();
+        let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<NautilusWsMessage>();
         self.rx = Some(event_rx);
         self.signal.store(false, Ordering::Relaxed);
 
@@ -355,6 +365,9 @@ impl BybitWebSocketClient {
         let requires_auth = self.requires_auth;
         let is_authenticated = Arc::clone(&self.is_authenticated);
         let quote_cache = Arc::clone(&self.quote_cache);
+        let instruments = Arc::clone(&self.instruments_cache);
+        let account_id = self.account_id;
+        let product_type = self.product_type;
 
         let task_handle = get_runtime().spawn(async move {
             while let Some(message) = message_rx.recv().await {
@@ -404,7 +417,7 @@ impl BybitWebSocketClient {
                                     Err(e) => {
                                         tracing::error!("Authentication after reconnect failed: {e}");
                                         let error = BybitWebSocketError::from_message(e.to_string());
-                                        let _ = event_tx_for_task.send(BybitWebSocketMessage::Error(error));
+                                        let _ = event_tx_for_task.send(NautilusWsMessage::Error(error));
                                         false
                                     }
                                 }
@@ -426,24 +439,37 @@ impl BybitWebSocketClient {
                             )
                             .await
                             {
-                                tracing::error!("Failed to restore subscriptions after reconnection: {e}");
-                                let error = BybitWebSocketError::from_message(e.to_string());
-                                let _ = event_tx_for_task.send(BybitWebSocketMessage::Error(error));
+                                tracing::error!("Failed to restore subscriptions after reconnection: {err}");
+                                let error = BybitWebSocketError::from_message(err.to_string());
+                                let _ = event_tx_for_task.send(NautilusWsMessage::Error(error));
                             } else {
                                 tracing::info!("Restored subscriptions after reconnection");
-                                let _ = event_tx_for_task.send(BybitWebSocketMessage::Reconnected);
+                                let _ = event_tx_for_task.send(NautilusWsMessage::Reconnected);
                             }
                         });
                     }
                     Ok(Some(event)) => {
-                        if event_tx.send(event).is_err() {
-                            break;
+                        // Parse Bybit message into Nautilus messages
+                        let nautilus_messages = Self::parse_to_nautilus_messages(
+                            event,
+                            &instruments,
+                            account_id,
+                            product_type,
+                            &quote_cache,
+                        )
+                        .await;
+
+                        // Send each parsed message
+                        for nautilus_msg in nautilus_messages {
+                            if event_tx.send(nautilus_msg).is_err() {
+                                break;
+                            }
                         }
                     }
                     Ok(None) => {}
-                    Err(e) => {
-                        let error = BybitWebSocketError::from_message(e.to_string());
-                        if event_tx.send(BybitWebSocketMessage::Error(error)).is_err() {
+                    Err(err) => {
+                        let error = BybitWebSocketError::from_message(err.to_string());
+                        if event_tx.send(NautilusWsMessage::Error(error)).is_err() {
                             break;
                         }
                     }
@@ -568,14 +594,14 @@ impl BybitWebSocketClient {
         Self::send_topics_inner(&self.inner, BybitWsOperation::Unsubscribe, topics_to_send).await
     }
 
-    /// Returns a stream of parsed [`BybitWebSocketMessage`] items.
+    /// Returns a stream of parsed [`NautilusWsMessage`] items.
     ///
     /// # Panics
     ///
     /// Panics if called before [`Self::connect`] or if the stream has already been taken.
     pub fn stream(
         &mut self,
-    ) -> impl futures_util::Stream<Item = BybitWebSocketMessage> + Send + 'static {
+    ) -> impl futures_util::Stream<Item = NautilusWsMessage> + Send + 'static {
         let rx = self
             .rx
             .take()
@@ -600,6 +626,18 @@ impl BybitWebSocketClient {
         let instrument_id = instrument.id();
         self.instruments_cache.insert(instrument_id, instrument);
         tracing::debug!("Added instrument {instrument_id} to WebSocket client cache");
+    }
+
+    /// Initializes the instruments cache with a collection of instruments.
+    pub fn initialize_instruments_cache(&self, instruments: Vec<InstrumentAny>) {
+        for instrument in instruments {
+            let instrument_id = instrument.id();
+            self.instruments_cache.insert(instrument_id, instrument);
+        }
+        tracing::debug!(
+            "Initialized instruments cache with {} instruments",
+            self.instruments_cache.len()
+        );
     }
 
     /// Returns a reference to the instruments cache.
@@ -1234,12 +1272,370 @@ impl BybitWebSocketClient {
         self.cancel_order(params).await
     }
 
+    /// Batch cancels multiple orders using Nautilus domain objects.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if batch cancellation fails or if not authenticated.
+    pub async fn batch_cancel_orders_by_id(
+        &self,
+        product_type: BybitProductType,
+        instrument_ids: Vec<InstrumentId>,
+        venue_order_ids: Vec<Option<VenueOrderId>>,
+        client_order_ids: Vec<Option<ClientOrderId>>,
+    ) -> BybitWsResult<()> {
+        if instrument_ids.len() != venue_order_ids.len()
+            || instrument_ids.len() != client_order_ids.len()
+        {
+            return Err(BybitWsError::ClientError(
+                "instrument_ids, venue_order_ids, and client_order_ids must have the same length"
+                    .to_string(),
+            ));
+        }
+
+        let mut params_vec = Vec::new();
+
+        for ((instrument_id, venue_order_id), client_order_id) in instrument_ids
+            .into_iter()
+            .zip(venue_order_ids.into_iter())
+            .zip(client_order_ids.into_iter())
+        {
+            let bybit_symbol = BybitSymbol::new(instrument_id.symbol.as_str())
+                .map_err(|e| BybitWsError::ClientError(e.to_string()))?;
+            let raw_symbol = Ustr::from(bybit_symbol.raw_symbol());
+
+            let params = BybitWsCancelOrderParams {
+                category: product_type,
+                symbol: raw_symbol,
+                order_id: venue_order_id.map(|id| id.to_string()),
+                order_link_id: client_order_id.map(|id| id.to_string()),
+            };
+
+            params_vec.push(params);
+        }
+
+        self.batch_cancel_orders(params_vec).await
+    }
+
     fn default_headers() -> Vec<(String, String)> {
         vec![
             ("Content-Type".to_string(), "application/json".to_string()),
             ("User-Agent".to_string(), NAUTILUS_USER_AGENT.to_string()),
             ("Referer".to_string(), BYBIT_NAUTILUS_BROKER_ID.to_string()),
         ]
+    }
+
+    /// Parses a Bybit WebSocket message into Nautilus domain messages.
+    ///
+    /// This method converts raw Bybit messages into fully-parsed Nautilus objects,
+    /// performing instrument lookups and data transformations as needed.
+    async fn parse_to_nautilus_messages(
+        msg: BybitWebSocketMessage,
+        instruments: &Arc<DashMap<InstrumentId, InstrumentAny>>,
+        account_id: Option<AccountId>,
+        product_type: Option<BybitProductType>,
+        quote_cache: &Arc<RwLock<cache::QuoteCache>>,
+    ) -> Vec<NautilusWsMessage> {
+        let clock = get_atomic_clock_realtime();
+        let mut result = Vec::new();
+
+        match msg {
+            BybitWebSocketMessage::Orderbook(msg) => {
+                let raw_symbol = msg.data.s;
+                let symbol = product_type
+                    .map_or(raw_symbol, |pt| make_bybit_symbol(raw_symbol.as_str(), pt));
+
+                if let Some(instrument_entry) = instruments
+                    .iter()
+                    .find(|e| e.key().symbol.as_str() == symbol.as_str())
+                {
+                    let instrument = instrument_entry.value();
+                    let ts_init = clock.get_time_ns();
+
+                    match parse_orderbook_deltas(&msg, instrument, ts_init) {
+                        Ok(deltas) => result.push(NautilusWsMessage::Deltas(deltas)),
+                        Err(e) => tracing::error!("Error parsing orderbook deltas: {e}"),
+                    }
+                } else {
+                    tracing::warn!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol");
+                }
+            }
+            BybitWebSocketMessage::Trade(msg) => {
+                let mut data_vec = Vec::new();
+                for trade in &msg.data {
+                    let raw_symbol = trade.s;
+                    let symbol = product_type
+                        .map_or(raw_symbol, |pt| make_bybit_symbol(raw_symbol.as_str(), pt));
+
+                    if let Some(instrument_entry) = instruments
+                        .iter()
+                        .find(|e| e.key().symbol.as_str() == symbol.as_str())
+                    {
+                        let instrument = instrument_entry.value();
+                        let ts_init = clock.get_time_ns();
+
+                        match parse_ws_trade_tick(trade, instrument, ts_init) {
+                            Ok(tick) => data_vec.push(Data::Trade(tick)),
+                            Err(e) => tracing::error!("Error parsing trade tick: {e}"),
+                        }
+                    } else {
+                        tracing::warn!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol");
+                    }
+                }
+                if !data_vec.is_empty() {
+                    result.push(NautilusWsMessage::Data(data_vec));
+                }
+            }
+            BybitWebSocketMessage::TickerLinear(msg) => {
+                let raw_symbol = msg.data.symbol;
+                let symbol = product_type
+                    .map_or(raw_symbol, |pt| make_bybit_symbol(raw_symbol.as_str(), pt));
+
+                if let Some(instrument_entry) = instruments
+                    .iter()
+                    .find(|e| e.key().symbol.as_str() == symbol.as_str())
+                {
+                    let instrument = instrument_entry.value();
+                    let instrument_id = instrument.id();
+                    let ts_event = parse_millis_i64(msg.ts, "ticker.ts")
+                        .unwrap_or_else(|_| clock.get_time_ns());
+                    let ts_init = clock.get_time_ns();
+
+                    match quote_cache.write().await.process_linear_ticker(
+                        &msg.data,
+                        instrument_id,
+                        instrument,
+                        ts_event,
+                        ts_init,
+                    ) {
+                        Ok(quote) => result.push(NautilusWsMessage::Data(vec![Data::Quote(quote)])),
+                        Err(e) => {
+                            let raw_data = serde_json::to_string(&msg.data)
+                                .unwrap_or_else(|_| "<failed to serialize>".to_string());
+                            tracing::debug!(
+                                "Skipping partial ticker update: {e}, raw_data: {raw_data}"
+                            );
+                        }
+                    }
+                } else {
+                    tracing::warn!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol");
+                }
+            }
+            BybitWebSocketMessage::TickerOption(msg) => {
+                let raw_symbol = &msg.data.symbol;
+                let symbol = product_type.map_or_else(
+                    || raw_symbol.as_str().into(),
+                    |pt| make_bybit_symbol(raw_symbol, pt),
+                );
+
+                if let Some(instrument_entry) = instruments
+                    .iter()
+                    .find(|e| e.key().symbol.as_str() == symbol.as_str())
+                {
+                    let instrument = instrument_entry.value();
+                    let instrument_id = instrument.id();
+                    let ts_event = parse_millis_i64(msg.ts, "ticker.ts")
+                        .unwrap_or_else(|_| clock.get_time_ns());
+                    let ts_init = clock.get_time_ns();
+
+                    match quote_cache.write().await.process_option_ticker(
+                        &msg.data,
+                        instrument_id,
+                        instrument,
+                        ts_event,
+                        ts_init,
+                    ) {
+                        Ok(quote) => result.push(NautilusWsMessage::Data(vec![Data::Quote(quote)])),
+                        Err(e) => {
+                            let raw_data = serde_json::to_string(&msg.data)
+                                .unwrap_or_else(|_| "<failed to serialize>".to_string());
+                            tracing::debug!(
+                                "Skipping partial ticker update: {e}, raw_data: {raw_data}"
+                            );
+                        }
+                    }
+                } else {
+                    tracing::warn!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol");
+                }
+            }
+            BybitWebSocketMessage::Kline(msg) => {
+                let (interval_str, raw_symbol) = match parse_kline_topic(&msg.topic) {
+                    Ok(parts) => parts,
+                    Err(e) => {
+                        tracing::warn!("Failed to parse kline topic: {e}");
+                        return result;
+                    }
+                };
+
+                let symbol = product_type
+                    .map_or_else(|| raw_symbol.into(), |pt| make_bybit_symbol(raw_symbol, pt));
+
+                if let Some(instrument_entry) = instruments
+                    .iter()
+                    .find(|e| e.key().symbol.as_str() == symbol.as_str())
+                {
+                    let instrument = instrument_entry.value();
+                    let ts_init = clock.get_time_ns();
+
+                    let (step, aggregation) = match interval_str.parse::<usize>() {
+                        Ok(minutes) if minutes > 0 => (minutes, BarAggregation::Minute),
+                        _ => {
+                            tracing::warn!("Unsupported kline interval: {}", interval_str);
+                            return result;
+                        }
+                    };
+
+                    if let Some(non_zero_step) = NonZero::new(step) {
+                        let bar_spec = BarSpecification {
+                            step: non_zero_step,
+                            aggregation,
+                            price_type: PriceType::Last,
+                        };
+                        let bar_type =
+                            BarType::new(instrument.id(), bar_spec, AggregationSource::External);
+
+                        let mut data_vec = Vec::new();
+                        for kline in &msg.data {
+                            match parse_ws_kline_bar(kline, instrument, bar_type, false, ts_init) {
+                                Ok(bar) => data_vec.push(Data::Bar(bar)),
+                                Err(e) => tracing::error!("Error parsing kline to bar: {e}"),
+                            }
+                        }
+                        if !data_vec.is_empty() {
+                            result.push(NautilusWsMessage::Data(data_vec));
+                        }
+                    } else {
+                        tracing::error!("Invalid step value: {}", step);
+                    }
+                } else {
+                    tracing::warn!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol");
+                }
+            }
+            BybitWebSocketMessage::AccountOrder(msg) => {
+                if let Some(account_id) = account_id {
+                    let mut reports = Vec::new();
+                    for order in &msg.data {
+                        let raw_symbol = order.symbol;
+                        let symbol = make_bybit_symbol(raw_symbol.as_str(), order.category);
+
+                        if let Some(instrument_entry) = instruments
+                            .iter()
+                            .find(|e| e.key().symbol.as_str() == symbol.as_str())
+                        {
+                            let instrument = instrument_entry.value();
+                            let ts_init = clock.get_time_ns();
+
+                            match parse_ws_order_status_report(
+                                order, instrument, account_id, ts_init,
+                            ) {
+                                Ok(report) => reports.push(report),
+                                Err(e) => tracing::error!("Error parsing order status report: {e}"),
+                            }
+                        } else {
+                            tracing::warn!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol");
+                        }
+                    }
+                    if !reports.is_empty() {
+                        result.push(NautilusWsMessage::OrderStatusReports(reports));
+                    }
+                } else {
+                    tracing::error!("Received AccountOrder message but account_id is not set");
+                }
+            }
+            BybitWebSocketMessage::AccountExecution(msg) => {
+                if let Some(account_id) = account_id {
+                    let mut reports = Vec::new();
+                    for execution in &msg.data {
+                        let raw_symbol = execution.symbol;
+                        let symbol = make_bybit_symbol(raw_symbol.as_str(), execution.category);
+
+                        if let Some(instrument_entry) = instruments
+                            .iter()
+                            .find(|e| e.key().symbol.as_str() == symbol.as_str())
+                        {
+                            let instrument = instrument_entry.value();
+                            let ts_init = clock.get_time_ns();
+
+                            match parse_ws_fill_report(execution, account_id, instrument, ts_init) {
+                                Ok(report) => reports.push(report),
+                                Err(e) => tracing::error!("Error parsing fill report: {e}"),
+                            }
+                        } else {
+                            tracing::warn!(raw_symbol = %raw_symbol, full_symbol = %symbol, "No instrument found for symbol");
+                        }
+                    }
+                    if !reports.is_empty() {
+                        result.push(NautilusWsMessage::FillReports(reports));
+                    }
+                } else {
+                    tracing::error!("Received AccountExecution message but account_id is not set");
+                }
+            }
+            BybitWebSocketMessage::AccountWallet(msg) => {
+                if let Some(account_id) = account_id {
+                    for wallet in &msg.data {
+                        let ts_event = UnixNanos::from(msg.creation_time as u64 * 1_000_000);
+                        let ts_init = clock.get_time_ns();
+
+                        match parse_ws_account_state(wallet, account_id, ts_event, ts_init) {
+                            Ok(state) => result.push(NautilusWsMessage::AccountState(state)),
+                            Err(e) => tracing::error!("Error parsing account state: {e}"),
+                        }
+                    }
+                } else {
+                    tracing::error!("Received AccountWallet message but account_id is not set");
+                }
+            }
+            BybitWebSocketMessage::AccountPosition(msg) => {
+                if let Some(account_id) = account_id {
+                    for position in &msg.data {
+                        let raw_symbol = position.symbol;
+
+                        if let Some(instrument_entry) = instruments.iter().find(|e| {
+                            let inst_symbol = e.key().symbol.as_str();
+                            inst_symbol.starts_with(raw_symbol.as_str())
+                                && inst_symbol.len() > raw_symbol.len()
+                                && inst_symbol.as_bytes().get(raw_symbol.len()) == Some(&b'-')
+                        }) {
+                            let instrument = instrument_entry.value();
+                            let ts_init = clock.get_time_ns();
+
+                            match parse_ws_position_status_report(
+                                position, account_id, instrument, ts_init,
+                            ) {
+                                Ok(report) => {
+                                    result.push(NautilusWsMessage::PositionStatusReport(report));
+                                }
+                                Err(e) => {
+                                    tracing::error!("Error parsing position status report: {e}");
+                                }
+                            }
+                        } else {
+                            tracing::warn!(raw_symbol = %raw_symbol, "No instrument found for symbol");
+                        }
+                    }
+                } else {
+                    tracing::error!("Received AccountPosition message but account_id is not set");
+                }
+            }
+            BybitWebSocketMessage::OrderResponse(resp) => {
+                if resp.ret_code == 0 {
+                    tracing::debug!(op = %resp.op, ret_msg = %resp.ret_msg, "Order operation successful");
+                } else {
+                    tracing::warn!(op = %resp.op, ret_code = resp.ret_code, ret_msg = %resp.ret_msg, "Order operation failed");
+                    // TODO: Parse order response into OrderRejected/OrderCancelRejected/OrderModifyRejected
+                }
+            }
+            BybitWebSocketMessage::Error(err) => {
+                result.push(NautilusWsMessage::Error(err));
+            }
+            BybitWebSocketMessage::Reconnected => {
+                result.push(NautilusWsMessage::Reconnected);
+            }
+            _ => {} // Ignore other message types (pong, auth, subscription confirmations, etc.)
+        }
+
+        result
     }
 
     async fn authenticate_if_required(&self) -> BybitWsResult<()> {
@@ -1496,6 +1892,20 @@ impl BybitWebSocketClient {
                 let error = BybitWebSocketError::from_response(&resp);
                 return Some(BybitWebSocketMessage::Error(error));
             }
+        }
+
+        // Check for order operation responses (order.create, order.amend, order.cancel)
+        if let Some(op) = value.get("op").and_then(Value::as_str)
+            && op.starts_with("order.")
+            && let Ok(order_resp) = serde_json::from_value::<BybitWsOrderResponse>(value.clone())
+        {
+            // Check ret_code to determine success or failure
+            if order_resp.ret_code == 0 {
+                return Some(BybitWebSocketMessage::OrderResponse(order_resp));
+            }
+            // Convert failed order response to error
+            let error = BybitWebSocketError::new(order_resp.ret_code, order_resp.ret_msg);
+            return Some(BybitWebSocketMessage::Error(error));
         }
 
         if (value.get("ret_code").is_some() || value.get("retCode").is_some())

@@ -5828,6 +5828,15 @@ class BybitHttpClient:
         quantity: Quantity | None = None,
         price: Price | None = None,
     ) -> OrderStatusReport: ...
+    def set_use_spot_position_reports(self, value: bool) -> None: ...
+    async def batch_cancel_orders(
+        self,
+        account_id: AccountId,
+        product_type: BybitProductType,
+        instrument_ids: list[InstrumentId],
+        client_order_ids: list[ClientOrderId | None],
+        venue_order_ids: list[VenueOrderId | None],
+    ) -> list[OrderStatusReport]: ...
 
 
 class BybitWebSocketClient:
@@ -5908,6 +5917,13 @@ class BybitWebSocketClient:
         instrument_id: InstrumentId,
         venue_order_id: VenueOrderId | None = None,
         client_order_id: ClientOrderId | None = None,
+    ) -> None: ...
+    async def batch_cancel_orders(
+        self,
+        product_type: BybitProductType,
+        instrument_ids: list[InstrumentId],
+        venue_order_ids: list[VenueOrderId | None],
+        client_order_ids: list[ClientOrderId | None],
     ) -> None: ...
 
 def get_bybit_http_base_url(environment: BybitEnvironment) -> str: ...
