@@ -142,8 +142,7 @@ pub fn py_adjust_fills_for_partial_window(
                 let side = mass_status_obj
                     .order_reports()
                     .get(&venue_order_id)
-                    .map(|order| order.order_side)
-                    .unwrap_or(fill.order_side);
+                    .map_or(fill.order_side, |order| order.order_side);
 
                 fill_snapshots.push(FillSnapshot::new(
                     fill.ts_event.as_u64(),
