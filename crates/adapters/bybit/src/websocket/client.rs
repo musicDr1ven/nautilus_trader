@@ -1170,6 +1170,16 @@ impl BybitWebSocketClient {
             None
         };
 
+        // For SPOT market orders, specify baseCoin to interpret qty as base currency.
+        // This ensures Nautilus quantities (always in base currency) are interpreted correctly.
+        let market_unit = if product_type == BybitProductType::Spot
+            && bybit_order_type == BybitOrderType::Market
+        {
+            Some("baseCoin".to_string())
+        } else {
+            None
+        };
+
         let params = if is_stop_order {
             // For conditional orders, ALL types use triggerPrice field
             // sl_trigger_price/tp_trigger_price are only for TP/SL attached to regular orders
@@ -1179,6 +1189,7 @@ impl BybitWebSocketClient {
                 side: bybit_side,
                 order_type: bybit_order_type,
                 qty: quantity.to_string(),
+                market_unit: market_unit.clone(),
                 price: price.map(|p| p.to_string()),
                 time_in_force: bybit_tif,
                 order_link_id: Some(client_order_id.to_string()),
@@ -1207,6 +1218,7 @@ impl BybitWebSocketClient {
                 side: bybit_side,
                 order_type: bybit_order_type,
                 qty: quantity.to_string(),
+                market_unit,
                 price: price.map(|p| p.to_string()),
                 time_in_force: bybit_tif,
                 order_link_id: Some(client_order_id.to_string()),

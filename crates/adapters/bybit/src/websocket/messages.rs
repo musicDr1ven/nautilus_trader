@@ -228,6 +228,8 @@ pub struct BybitWsPlaceOrderParams {
     pub order_type: BybitOrderType,
     pub qty: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub market_unit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub price: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub time_in_force: Option<BybitTimeInForce>,
