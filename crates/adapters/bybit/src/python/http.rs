@@ -98,6 +98,11 @@ impl BybitHttpClient {
         self.cancel_all_requests();
     }
 
+    #[pyo3(name = "set_use_spot_position_reports")]
+    fn py_set_use_spot_position_reports(&self, use_spot_position_reports: bool) {
+        self.set_use_spot_position_reports(use_spot_position_reports);
+    }
+
     #[pyo3(name = "request_instruments")]
     #[pyo3(signature = (product_type, symbol=None))]
     fn py_request_instruments<'py>(

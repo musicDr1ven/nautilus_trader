@@ -305,6 +305,24 @@ pub struct BybitWsCancelOrderParams {
     pub order_link_id: Option<String>,
 }
 
+/// Item in a batch cancel request (without category field).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BybitWsBatchCancelItem {
+    pub symbol: Ustr,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub order_link_id: Option<String>,
+}
+
+/// Arguments for batch cancel order operation via WebSocket.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BybitWsBatchCancelOrderArgs {
+    pub category: BybitProductType,
+    pub request: Vec<BybitWsBatchCancelItem>,
+}
+
 /// Subscription acknowledgement returned by Bybit.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct BybitWsSubscriptionMsg {

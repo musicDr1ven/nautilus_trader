@@ -32,7 +32,7 @@ use nautilus_core::{
 };
 use nautilus_model::{
     data::{Bar, BarType, TradeTick},
-    enums::{BarAggregation, OrderSide, OrderType, TimeInForce},
+    enums::{BarAggregation, OrderSide, OrderType, PositionSideSpecified, TimeInForce},
     events::account::state::AccountState,
     identifiers::{AccountId, ClientOrderId, InstrumentId, Symbol, VenueOrderId},
     instruments::{Instrument, InstrumentAny},
@@ -769,18 +769,16 @@ impl BybitHttpInnerClient {
                 let coin = base_currency.code;
                 let wallet_balance = wallet_by_coin.get(&coin).copied().unwrap_or(Decimal::ZERO);
 
-                // Create quantity using instrument's size precision
                 // Handle negative balances (borrowed assets) by using absolute value
                 let balance_f64 = wallet_balance.to_string().parse::<f64>().unwrap_or(0.0);
                 let quantity = Quantity::new(balance_f64.abs(), instrument.size_precision());
 
-                // Determine position side based on balance sign
                 let side = if balance_f64 > 0.0 {
-                    nautilus_model::enums::PositionSideSpecified::Long
+                    PositionSideSpecified::Long
                 } else if balance_f64 < 0.0 {
-                    nautilus_model::enums::PositionSideSpecified::Short
+                    PositionSideSpecified::Short
                 } else {
-                    nautilus_model::enums::PositionSideSpecified::Flat
+                    PositionSideSpecified::Flat
                 };
 
                 let report = PositionStatusReport::new(
@@ -817,18 +815,26 @@ impl BybitHttpInnerClient {
                     continue;
                 }
 
-                // Create quantity using instrument's size precision
+                // Handle negative balances (borrowed assets) by using absolute value
                 let balance_f64 = wallet_balance.to_string().parse::<f64>().unwrap_or(0.0);
-                let quantity = Quantity::new(balance_f64, instrument.size_precision());
+                let quantity = Quantity::new(balance_f64.abs(), instrument.size_precision());
 
                 if quantity.raw == 0 {
                     continue;
                 }
 
+                let side = if balance_f64 > 0.0 {
+                    PositionSideSpecified::Long
+                } else if balance_f64 < 0.0 {
+                    PositionSideSpecified::Short
+                } else {
+                    PositionSideSpecified::Flat
+                };
+
                 let report = PositionStatusReport::new(
                     account_id,
                     instrument.id(),
-                    nautilus_model::enums::PositionSideSpecified::Long,
+                    side,
                     quantity,
                     ts_init,
                     ts_init,

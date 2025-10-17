@@ -71,10 +71,10 @@ use crate::{
             BybitAuthRequest, BybitSubscription, BybitWebSocketError, BybitWebSocketMessage,
             BybitWsAccountExecutionMsg, BybitWsAccountOrderMsg, BybitWsAccountPositionMsg,
             BybitWsAccountWalletMsg, BybitWsAmendOrderParams, BybitWsAuthResponse,
-            BybitWsCancelOrderParams, BybitWsHeader, BybitWsKlineMsg, BybitWsOrderResponse,
-            BybitWsOrderbookDepthMsg, BybitWsPlaceOrderParams, BybitWsRequest, BybitWsResponse,
-            BybitWsSubscriptionMsg, BybitWsTickerLinearMsg, BybitWsTickerOptionMsg,
-            BybitWsTradeMsg, NautilusWsMessage,
+            BybitWsBatchCancelItem, BybitWsBatchCancelOrderArgs, BybitWsCancelOrderParams,
+            BybitWsHeader, BybitWsKlineMsg, BybitWsOrderResponse, BybitWsOrderbookDepthMsg,
+            BybitWsPlaceOrderParams, BybitWsRequest, BybitWsResponse, BybitWsSubscriptionMsg,
+            BybitWsTickerLinearMsg, BybitWsTickerOptionMsg, BybitWsTradeMsg, NautilusWsMessage,
         },
         parse::{
             parse_kline_topic, parse_millis_i64, parse_orderbook_deltas, parse_ws_account_state,
@@ -1067,16 +1067,37 @@ impl BybitWebSocketClient {
             ));
         }
 
+        if orders.is_empty() {
+            return Ok(());
+        }
+
         if orders.len() > 20 {
             return Err(BybitWsError::ClientError(
                 "Batch cancel limit is 20 orders per request".to_string(),
             ));
         }
 
+        // Extract category from first order (all orders must have the same category)
+        let category = orders[0].category;
+
+        let request_items: Vec<BybitWsBatchCancelItem> = orders
+            .into_iter()
+            .map(|order| BybitWsBatchCancelItem {
+                symbol: order.symbol,
+                order_id: order.order_id,
+                order_link_id: order.order_link_id,
+            })
+            .collect();
+
+        let args = BybitWsBatchCancelOrderArgs {
+            category,
+            request: request_items,
+        };
+
         let request = BybitWsRequest {
             op: BybitWsOrderRequestOp::CancelBatch,
             header: BybitWsHeader::now(),
-            args: orders,
+            args: vec![args],
         };
 
         let payload = serde_json::to_string(&request).map_err(BybitWsError::from)?;

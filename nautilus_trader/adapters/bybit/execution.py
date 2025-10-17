@@ -169,6 +169,9 @@ class BybitExecutionClient(LiveExecutionClient):
         self._http_client = client
         self._log.info(f"REST API key {self._http_client.api_key}", LogColor.BLUE)
 
+        # Configure HTTP client settings
+        self._http_client.set_use_spot_position_reports(self._use_spot_position_reports)
+
         # WebSocket API - environment setup
         environment = (
             nautilus_pyo3.BybitEnvironment.TESTNET
