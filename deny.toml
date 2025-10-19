@@ -25,6 +25,7 @@ ignore = [
   # TODO: Monitor https://github.com/enviodev/hypersync-client-rust for polars upgrade
   # Consider migrating to fast-float2 fork once hypersync-client updates
   { id = "RUSTSEC-2024-0379", reason = "fast-float is transitive via hypersync-client→polars-arrow, no safe upgrade available" },
+  { id = "RUSTSEC-2025-0003", reason = "fast-float is transitive via hypersync-client→polars-arrow, no safe upgrade available" },
 ]
 
 # =============================================================================

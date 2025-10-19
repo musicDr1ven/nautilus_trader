@@ -213,7 +213,7 @@ security-audit: check-audit-installed  #-- Run security audit for Rust and Pytho
 
 .PHONY: cargo-deny
 cargo-deny: check-deny-installed  #-- Run cargo-deny checks (advisories, sources, bans, licenses)
-	cargo deny check
+	cargo deny --all-features check
 
 #== Documentation
 
