@@ -366,6 +366,8 @@ jobs:
     permissions:
       actions: write # Required for deleting artifacts
       contents: read
+      id-token: write # Required for attestations
+      attestations: write # Required for attestations
     needs:
       - build-linux-x86
       - build-macos
@@ -401,6 +403,12 @@ jobs:
           pattern: "*.whl"
           merge-multiple: true
 
+      # https://github.com/actions/attest-build-provenance
+      - name: Attest wheel provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: 'dist/*.whl'
+
       - name: Publish wheels to Cloudflare R2
         uses: ./.github/actions/publish-wheels
 
@@ -418,6 +426,8 @@ jobs:
     permissions:
       actions: write # Required for deleting artifacts
       contents: read
+      id-token: write # Required for attestations
+      attestations: write # Required for attestations
     needs:
       - build-linux-x86
       - build-linux-arm
@@ -453,6 +463,12 @@ jobs:
           pattern: "*.whl"
           merge-multiple: true
 
+      # https://github.com/actions/attest-build-provenance
+      - name: Attest wheel provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: 'dist/*.whl'
+
       - name: Publish wheels to Cloudflare R2
         uses: ./.github/actions/publish-wheels
 
@@ -469,6 +485,8 @@ jobs:
     permissions:
       contents: write # Required for uploading release assets
       actions: write  # Required for deleting artifacts
+      id-token: write # Required for attestations
+      attestations: write # Required for attestations
     needs:
       - build-linux-x86
       - build-linux-arm
@@ -517,6 +535,12 @@ jobs:
           path: dist
           pattern: "*.whl"
           merge-multiple: true
+
+      # https://github.com/actions/attest-build-provenance
+      - name: Attest wheel provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: 'dist/*.whl'
 
       - name: Publish wheels to Cloudflare R2
         uses: ./.github/actions/publish-wheels
@@ -647,6 +671,8 @@ jobs:
     environment: release
     permissions:
       contents: write # Required for uploading release assets
+      id-token: write # Required for attestations
+      attestations: write # Required for attestations
     env:
       COPY_TO_SOURCE: false # Do not copy built *.so files back into source tree
     steps:
@@ -675,6 +701,12 @@ jobs:
       - name: Build sdist
         run: |
           uv build --sdist
+
+      # https://github.com/actions/attest-build-provenance
+      - name: Attest sdist provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: 'dist/*.tar.gz'
 
       - name: Set release output
         id: vars
