@@ -56,7 +56,7 @@ jobs:
       # License compliance is verified manually until this is resolved upstream.
       # See deny.toml for documented exception and tracking.
       - name: Run cargo-deny (advisories, sources, bans)
-        uses: EmbarkStudios/cargo-deny-action@8371184bd11e21dcf8ac82ebf8c9c9f74ebf7268 # v2.0.1
+        uses: EmbarkStudios/cargo-deny-action@f9cc7aa250dec5698b425dc01fbf0d745fcd1b78 # v2.0.13
         with:
           command: check advisories sources bans
 
