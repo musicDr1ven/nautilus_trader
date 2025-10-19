@@ -7,7 +7,7 @@ permissions: # Principle of least privilege
 
 on:
   pull_request:
-    branches: [master]
+    branches: [develop, test-build]
   schedule:
     - cron: '42 13 * * 4'
 
@@ -18,7 +18,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        language: ['python']
+        language: ['python', 'rust']
     steps:
       # https://github.com/step-security/harden-runner
       - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
