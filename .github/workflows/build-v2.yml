@@ -170,7 +170,9 @@ jobs:
         uses: ./.github/actions/upload-artifact-wheel
 
   publish:
-    needs: build
+    needs:
+      - cargo-deny
+      - build
     runs-on: ubuntu-latest
     # Only publish from mainline branches (test-ci temporarily included for attestation testing)
     if: >

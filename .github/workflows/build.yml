@@ -380,6 +380,7 @@ jobs:
       id-token: write # Required for attestations
       attestations: write # Required for attestations
     needs:
+      - cargo-deny
       - build-linux-x86
       - build-macos
       - build-windows
@@ -448,6 +449,7 @@ jobs:
       id-token: write # Required for attestations
       attestations: write # Required for attestations
     needs:
+      - cargo-deny
       - build-linux-x86
       - build-linux-arm
       - build-macos
@@ -507,6 +509,7 @@ jobs:
       id-token: write # Required for attestations
       attestations: write # Required for attestations
     needs:
+      - cargo-deny
       - build-linux-x86
       - build-linux-arm
       - build-macos
