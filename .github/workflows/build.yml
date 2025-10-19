@@ -50,6 +50,17 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Get Rust toolchain version
+        id: rust-toolchain
+        run: |
+          echo "TOOLCHAIN=$(bash scripts/rust-toolchain.sh)" >> $GITHUB_ENV
+
+      # https://github.com/actions-rust-lang/setup-rust-toolchain
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@ac90e63697ac2784f4ecfe2964e1a285c304003a # v1.14.1
+        with:
+          toolchain: ${{ env.TOOLCHAIN }}
+
       # https://github.com/EmbarkStudios/cargo-deny-action
       # NOTE: License checking is disabled due to implied-vol crate not declaring
       # its license in Cargo.toml (has MIT LICENSE file but shows as "unlicensed").
@@ -373,6 +384,7 @@ jobs:
       - build-macos
       - build-windows
       # - build-linux-arm # Keep for nightly only (slow build)
+    # test-ci temporarily included for attestation testing
     if: >
       github.event_name == 'push' && (github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/test-ci')
     env:
@@ -402,6 +414,13 @@ jobs:
           path: dist
           pattern: "*.whl"
           merge-multiple: true
+
+      - name: Debug - List downloaded wheels
+        run: |
+          echo "Contents of dist directory:"
+          ls -la dist/
+          echo "Wheel files found:"
+          find dist -name "*.whl" -type f
 
       # https://github.com/actions/attest-build-provenance
       - name: Attest wheel provenance

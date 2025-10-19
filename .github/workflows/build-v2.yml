@@ -41,6 +41,41 @@ jobs:
       - name: Run pre-commit
         run: pre-commit run --all-files
 
+  cargo-deny:
+    runs-on: ubuntu-22.04
+    steps:
+      # https://github.com/step-security/harden-runner
+      - uses: step-security/harden-runner@f4a75cfd619ee5ce8d5b864b0d183aff3c69b55a # v2.13.1
+        with:
+          egress-policy: audit
+
+      - name: Checkout repository
+        # https://github.com/actions/checkout
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          persist-credentials: false
+
+      - name: Get Rust toolchain version
+        id: rust-toolchain
+        run: |
+          echo "TOOLCHAIN=$(bash scripts/rust-toolchain.sh)" >> $GITHUB_ENV
+
+      # https://github.com/actions-rust-lang/setup-rust-toolchain
+      - name: Set up Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@ac90e63697ac2784f4ecfe2964e1a285c304003a # v1.14.1
+        with:
+          toolchain: ${{ env.TOOLCHAIN }}
+
+      # https://github.com/EmbarkStudios/cargo-deny-action
+      # NOTE: License checking is disabled due to implied-vol crate not declaring
+      # its license in Cargo.toml (has MIT LICENSE file but shows as "unlicensed").
+      # License compliance is verified manually until this is resolved upstream.
+      # See deny.toml for documented exception and tracking.
+      - name: Run cargo-deny (advisories, sources, bans)
+        uses: EmbarkStudios/cargo-deny-action@f9cc7aa250dec5698b425dc01fbf0d745fcd1b78 # v2.0.13
+        with:
+          command: check advisories sources bans
+
   build:
     needs: pre-commit
     strategy:
@@ -137,15 +172,18 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
-    # Only publish from mainline branches, never from test branches
+    # Only publish from mainline branches (test-ci temporarily included for attestation testing)
     if: >
       github.ref_name == 'develop' ||
       github.ref_name == 'nightly' ||
-      github.ref_name == 'master'
+      github.ref_name == 'master' ||
+      github.ref_name == 'test-ci'
     environment: r2-${{ github.ref_name }}
     permissions:
       actions: write # Required for deleting artifacts
       contents: read
+      id-token: write # Required for attestations
+      attestations: write # Required for attestations
     env:
       AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
       AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
@@ -172,6 +210,19 @@ jobs:
           path: dist
           pattern: "*.whl"
           merge-multiple: true
+
+      - name: Debug - List downloaded wheels
+        run: |
+          echo "Contents of dist directory:"
+          ls -la dist/
+          echo "Wheel files found:"
+          find dist -name "*.whl" -type f
+
+      # https://github.com/actions/attest-build-provenance
+      - name: Attest wheel provenance
+        uses: actions/attest-build-provenance@977bb373ede98d70efdf65b84cb5f73e068dcc2a # v3.0.0
+        with:
+          subject-path: 'dist/*.whl'
 
       - name: Publish wheels to Cloudflare R2 (v2 bucket)
         uses: ./.github/actions/publish-wheels
