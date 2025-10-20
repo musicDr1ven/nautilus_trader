@@ -15,6 +15,8 @@
 
 import asyncio
 
+import pandas as pd
+
 from nautilus_trader.adapters.bybit.config import BybitDataClientConfig
 from nautilus_trader.adapters.bybit.constants import BYBIT_VENUE
 from nautilus_trader.adapters.bybit.providers import BybitInstrumentProvider
@@ -24,6 +26,10 @@ from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.correctness import PyCondition
+from nautilus_trader.core.datetime import ensure_pydatetime_utc
+from nautilus_trader.data.messages import RequestBars
+from nautilus_trader.data.messages import RequestQuoteTicks
+from nautilus_trader.data.messages import RequestTradeTicks
 from nautilus_trader.data.messages import SubscribeBars
 from nautilus_trader.data.messages import SubscribeFundingRates
 from nautilus_trader.data.messages import SubscribeOrderBook
@@ -37,8 +43,11 @@ from nautilus_trader.data.messages import UnsubscribeTradeTicks
 from nautilus_trader.live.cancellation import DEFAULT_FUTURE_CANCELLATION_TIMEOUT
 from nautilus_trader.live.cancellation import cancel_tasks_with_timeout
 from nautilus_trader.live.data_client import LiveMarketDataClient
+from nautilus_trader.model.data import Bar
+from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.data import capsule_to_data
 from nautilus_trader.model.enums import BookType
+from nautilus_trader.model.enums import PriceType
 from nautilus_trader.model.enums import book_type_to_str
 from nautilus_trader.model.identifiers import ClientId
 
@@ -189,20 +198,13 @@ class BybitDataClient(LiveMarketDataClient):
         self,
         instrument_id: nautilus_pyo3.InstrumentId,
     ) -> nautilus_pyo3.BybitWebSocketClient:
-        symbol = instrument_id.symbol.value
-
-        if symbol.endswith("-SPOT"):
-            product_type = nautilus_pyo3.BybitProductType.SPOT
-        elif symbol.endswith("-LINEAR"):
-            product_type = nautilus_pyo3.BybitProductType.LINEAR
-        elif symbol.endswith("-INVERSE"):
-            product_type = nautilus_pyo3.BybitProductType.INVERSE
-        elif symbol.endswith("-OPTION"):
-            product_type = nautilus_pyo3.BybitProductType.OPTION
-        else:
-            # Fallback to first available client
+        try:
+            product_type = nautilus_pyo3.bybit_product_type_from_symbol(instrument_id.symbol.value)
+        except ValueError:
+            # Fallback to first available client if symbol doesn't have valid suffix
             self._log.warning(
-                f"Could not determine product type for {symbol}, using first available client",
+                f"Could not determine product type for {instrument_id.symbol.value}, "
+                f"using first available client",
             )
             return next(iter(self._ws_clients.values()))
 
@@ -215,8 +217,8 @@ class BybitDataClient(LiveMarketDataClient):
         return ws_client
 
     def _bar_spec_to_bybit_interval(self, bar_spec) -> str:
-        return nautilus_pyo3.bar_spec_to_bybit_interval(
-            bar_spec.aggregation.value,
+        return nautilus_pyo3.bybit_bar_spec_to_interval(
+            bar_spec.aggregation,
             bar_spec.step,
         )
 
@@ -325,3 +327,102 @@ class BybitDataClient(LiveMarketDataClient):
 
         except Exception as e:
             self._log.error(f"Error handling websocket message: {e}")
+
+    async def _request_quote_ticks(self, request: RequestQuoteTicks) -> None:
+        self._log.error(
+            "Cannot request historical quotes: not published by Bybit",
+        )
+
+    async def _request_trade_ticks(self, request: RequestTradeTicks) -> None:
+        limit = request.limit
+
+        if limit == 0 or limit > 1000:
+            limit = 1000
+
+        if (self._clock.utc_now() - request.start) > pd.Timedelta(days=1):
+            self._log.error(
+                "Cannot specify `start` older than 1 day for historical trades: "
+                "Bybit only provides '1 day old trades'",
+            )
+            return
+
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(request.instrument_id.value)
+        product_type = nautilus_pyo3.bybit_product_type_from_symbol(
+            pyo3_instrument_id.symbol.value,
+        )
+
+        try:
+            pyo3_trades = await self._http_client.request_trades(
+                product_type=product_type,
+                instrument_id=pyo3_instrument_id,
+                start=ensure_pydatetime_utc(request.start),
+                end=ensure_pydatetime_utc(request.end),
+                limit=limit,
+            )
+            trades = TradeTick.from_pyo3_list(pyo3_trades)
+
+            self._handle_trade_ticks(
+                request.instrument_id,
+                trades,
+                request.id,
+                request.start,
+                request.end,
+                request.params,
+            )
+        except Exception as e:
+            self._log.error(f"Failed to request trade ticks: {e}")
+
+    async def _request_bars(self, request: RequestBars) -> None:
+        if request.bar_type.is_internally_aggregated():
+            self._log.error(
+                f"Cannot request {request.bar_type} bars: "
+                f"only historical bars with EXTERNAL aggregation available from Bybit",
+            )
+            return
+
+        if not request.bar_type.spec.is_time_aggregated():
+            self._log.error(
+                f"Cannot request {request.bar_type} bars: only time bars are aggregated by Bybit",
+            )
+            return
+
+        if request.bar_type.spec.price_type != PriceType.LAST:
+            self._log.error(
+                f"Cannot request {request.bar_type} bars: "
+                f"only historical bars for LAST price type available from Bybit",
+            )
+            return
+
+        pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(
+            request.bar_type.instrument_id.value,
+        )
+        product_type = nautilus_pyo3.bybit_product_type_from_symbol(
+            pyo3_instrument_id.symbol.value,
+        )
+        pyo3_bar_type = nautilus_pyo3.BarType.from_str(str(request.bar_type))
+
+        self._log.debug(
+            f"Requesting klines start={request.start}, end={request.end}, {request.limit=}",
+        )
+
+        try:
+            pyo3_bars = await self._http_client.request_bars(
+                product_type=product_type,
+                bar_type=pyo3_bar_type,
+                start=ensure_pydatetime_utc(request.start),
+                end=ensure_pydatetime_utc(request.end),
+                limit=request.limit or 200,
+                timestamp_on_close=self._bars_timestamp_on_close,
+            )
+            bars = Bar.from_pyo3_list(pyo3_bars)
+
+            self._handle_bars(
+                request.bar_type,
+                bars,
+                request.id,
+                request.start,
+                request.end,
+                request.params,
+            )
+        except Exception as e:
+            self._log.error(f"Failed to request bars: {e}")

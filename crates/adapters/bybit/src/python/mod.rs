@@ -27,6 +27,7 @@ use pyo3::prelude::*;
 use crate::common::{
     consts::BYBIT_NAUTILUS_BROKER_ID,
     parse::{bar_spec_to_bybit_interval, extract_raw_symbol},
+    symbol::BybitSymbol,
 };
 
 /// Extracts the raw symbol from a Bybit symbol by removing the product type suffix.
@@ -36,8 +37,8 @@ use crate::common::{
 /// - `"BTCUSDT-SPOT"` → `"BTCUSDT"`
 /// - `"ETHUSDT"` → `"ETHUSDT"` (no suffix)
 #[pyfunction]
-#[pyo3(name = "extract_raw_symbol")]
-fn py_extract_raw_symbol(symbol: &str) -> &str {
+#[pyo3(name = "bybit_extract_raw_symbol")]
+fn py_bybit_extract_raw_symbol(symbol: &str) -> &str {
     extract_raw_symbol(symbol)
 }
 
@@ -47,14 +48,34 @@ fn py_extract_raw_symbol(symbol: &str) -> &str {
 ///
 /// Returns an error if the aggregation type or step is not supported by Bybit.
 #[pyfunction]
-#[pyo3(name = "bar_spec_to_bybit_interval")]
-fn py_bar_spec_to_bybit_interval(aggregation: u8, step: u64) -> PyResult<String> {
+#[pyo3(name = "bybit_bar_spec_to_interval")]
+fn py_bybit_bar_spec_to_interval(aggregation: u8, step: u64) -> PyResult<String> {
     let aggregation = BarAggregation::from_repr(aggregation as usize).ok_or_else(|| {
         pyo3::exceptions::PyValueError::new_err(format!(
             "Invalid BarAggregation value: {aggregation}"
         ))
     })?;
     bar_spec_to_bybit_interval(aggregation, step).map_err(to_pyvalue_err)
+}
+
+/// Extracts the product type from a Bybit symbol.
+///
+/// # Examples
+/// - `"ETHUSDT-LINEAR"` → `BybitProductType.LINEAR`
+/// - `"BTCUSDT-SPOT"` → `BybitProductType.SPOT`
+/// - `"BTCUSD-INVERSE"` → `BybitProductType.INVERSE`
+/// - `"ETH-26JUN26-16000-P-OPTION"` → `BybitProductType.OPTION`
+///
+/// # Errors
+///
+/// Returns an error if the symbol does not contain a valid Bybit product type suffix.
+#[pyfunction]
+#[pyo3(name = "bybit_product_type_from_symbol")]
+fn py_bybit_product_type_from_symbol(
+    symbol: &str,
+) -> PyResult<crate::common::enums::BybitProductType> {
+    let bybit_symbol = BybitSymbol::new(symbol).map_err(to_pyvalue_err)?;
+    Ok(bybit_symbol.product_type())
 }
 
 /// Loaded as `nautilus_pyo3.bybit`.
@@ -79,7 +100,8 @@ pub fn bybit(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(urls::py_get_bybit_ws_url_public, m)?)?;
     m.add_function(wrap_pyfunction!(urls::py_get_bybit_ws_url_private, m)?)?;
     m.add_function(wrap_pyfunction!(urls::py_get_bybit_ws_url_trade, m)?)?;
-    m.add_function(wrap_pyfunction!(py_extract_raw_symbol, m)?)?;
-    m.add_function(wrap_pyfunction!(py_bar_spec_to_bybit_interval, m)?)?;
+    m.add_function(wrap_pyfunction!(py_bybit_extract_raw_symbol, m)?)?;
+    m.add_function(wrap_pyfunction!(py_bybit_bar_spec_to_interval, m)?)?;
+    m.add_function(wrap_pyfunction!(py_bybit_product_type_from_symbol, m)?)?;
     Ok(())
 }

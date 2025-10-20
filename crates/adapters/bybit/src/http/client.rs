@@ -27,6 +27,7 @@ use std::{
     },
 };
 
+use chrono::{DateTime, Utc};
 use nautilus_core::{
     consts::NAUTILUS_USER_AGENT, nanos::UnixNanos, time::get_atomic_clock_realtime,
 };
@@ -1564,7 +1565,14 @@ impl BybitHttpInnerClient {
         Ok(instruments)
     }
 
-    /// Request trade tick history for a given symbol.
+    /// Request recent trade tick history for a given symbol.
+    ///
+    /// **Important limitation**: Bybit's public API (`/v5/market/recent-trade`) only
+    /// returns the most recent trades (up to 1000). The `start` and `end` parameters
+    /// perform **client-side filtering only** after fetching these recent trades.
+    /// If the requested time window falls outside the most recent trades, this method
+    /// will return incomplete or empty results. For active markets, this typically
+    /// covers only the last few minutes.
     ///
     /// # Errors
     ///
@@ -1580,10 +1588,25 @@ impl BybitHttpInnerClient {
         &self,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<TradeTick>> {
         let instrument = self.instrument_from_cache(&instrument_id.symbol)?;
         let bybit_symbol = BybitSymbol::new(instrument_id.symbol.as_str())?;
+
+        // Warn if requesting trades older than a few minutes
+        if let Some(start_time) = start {
+            let age = chrono::Utc::now() - start_time;
+            if age > chrono::Duration::minutes(30) {
+                tracing::warn!(
+                    symbol = %instrument_id.symbol,
+                    age_minutes = age.num_minutes(),
+                    "Requesting trades older than 30 minutes may return incomplete results \
+                     as Bybit's public API only provides recent trades"
+                );
+            }
+        }
 
         let mut params_builder = BybitTradesParamsBuilder::default();
         params_builder.category(product_type);
@@ -1598,8 +1621,26 @@ impl BybitHttpInnerClient {
         let ts_init = self.generate_ts_init();
         let mut trades = Vec::new();
 
+        // Client-side filtering by timestamp
+        let start_ms = start.map(|dt| dt.timestamp_millis());
+        let end_ms = end.map(|dt| dt.timestamp_millis());
+
         for trade in response.result.list {
             if let Ok(trade_tick) = parse_trade_tick(&trade, &instrument, ts_init) {
+                let trade_time_ms = trade.time.parse::<i64>().unwrap_or(0);
+
+                // Apply client-side time filtering
+                if let Some(start_val) = start_ms
+                    && trade_time_ms < start_val
+                {
+                    continue;
+                }
+                if let Some(end_val) = end_ms
+                    && trade_time_ms > end_val
+                {
+                    continue;
+                }
+
                 trades.push(trade_tick);
             }
         }
@@ -1623,9 +1664,10 @@ impl BybitHttpInnerClient {
         &self,
         product_type: BybitProductType,
         bar_type: BarType,
-        start: Option<i64>,
-        end: Option<i64>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
+        timestamp_on_close: bool,
     ) -> anyhow::Result<Vec<Bar>> {
         let instrument = self.instrument_from_cache(&bar_type.instrument_id().symbol)?;
         let bybit_symbol = BybitSymbol::new(bar_type.instrument_id().symbol.as_str())?;
@@ -1641,34 +1683,112 @@ impl BybitHttpInnerClient {
             ),
         };
 
-        let mut params_builder = BybitKlinesParamsBuilder::default();
-        params_builder.category(product_type);
-        params_builder.symbol(bybit_symbol.raw_symbol().to_string());
-        params_builder.interval(interval);
+        let start_ms = start.map(|dt| dt.timestamp_millis());
+        let mut all_bars: Vec<Bar> = Vec::new();
+        let mut seen_timestamps: std::collections::HashSet<i64> = std::collections::HashSet::new();
 
-        if let Some(start_ts) = start {
-            params_builder.start(start_ts);
-        }
-        if let Some(end_ts) = end {
-            params_builder.end(end_ts);
-        }
-        if let Some(limit_val) = limit {
-            params_builder.limit(limit_val);
-        }
+        // Pagination strategy: work backwards from end time
+        // - Each page fetched is older than the previous page
+        // - Within each page, bars are in chronological order (oldest to newest)
+        // - We insert each new (older) page at the front to maintain overall chronological order
+        // Example with 2 pages:
+        //   Page 1 (most recent): bars [T=2000..2999]
+        //   Page 2 (older):       bars [T=1000..1999]
+        //   Result after splice:  bars [T=1000..1999, T=2000..2999] ✓ chronological
+        let mut current_end = end.map(|dt| dt.timestamp_millis());
+        let mut page_count = 0;
 
-        let params = params_builder.build().map_err(|e| anyhow::anyhow!(e))?;
-        let response = self.http_get_klines(&params).await?;
+        loop {
+            page_count += 1;
 
-        let ts_init = self.generate_ts_init();
-        let mut bars = Vec::new();
+            let mut params_builder = BybitKlinesParamsBuilder::default();
+            params_builder.category(product_type);
+            params_builder.symbol(bybit_symbol.raw_symbol().to_string());
+            params_builder.interval(interval);
+            params_builder.limit(1000u32); // Limit for data size per page (maximum for the Bybit API)
 
-        for kline in response.result.list {
-            if let Ok(bar) = parse_kline_bar(&kline, &instrument, bar_type, false, ts_init) {
-                bars.push(bar);
+            if let Some(start_val) = start_ms {
+                params_builder.start(start_val);
+            }
+            if let Some(end_val) = current_end {
+                params_builder.end(end_val);
+            }
+
+            let params = params_builder.build().map_err(|e| anyhow::anyhow!(e))?;
+            let response = self.http_get_klines(&params).await?;
+
+            let klines = response.result.list;
+            if klines.is_empty() {
+                break;
+            }
+
+            // Sort klines by start time
+            let mut sorted_klines = klines;
+            sorted_klines.sort_by_key(|k| k.start.parse::<i64>().unwrap_or(0));
+
+            // Parse klines to bars, filtering duplicates
+            let ts_init = self.generate_ts_init();
+            let mut new_bars = Vec::new();
+
+            for kline in &sorted_klines {
+                let start_time = kline.start.parse::<i64>().unwrap_or(0);
+                if !seen_timestamps.contains(&start_time)
+                    && let Ok(bar) =
+                        parse_kline_bar(kline, &instrument, bar_type, timestamp_on_close, ts_init)
+                {
+                    new_bars.push(bar);
+                }
+            }
+
+            // If no new bars were added (all were duplicates), we've reached the end
+            if new_bars.is_empty() {
+                break;
+            }
+
+            // Insert older pages at the front to maintain chronological order
+            // (we're fetching backwards, so each new page is older than what we already have)
+            all_bars.splice(0..0, new_bars);
+            seen_timestamps.extend(
+                sorted_klines
+                    .iter()
+                    .filter_map(|k| k.start.parse::<i64>().ok()),
+            );
+
+            // Check if we've reached the requested limit
+            if let Some(limit_val) = limit
+                && all_bars.len() >= limit_val as usize
+            {
+                break;
+            }
+
+            // Move end time backwards to get earlier data
+            // Set new end to be 1ms before the first bar of this page
+            let earliest_bar_time = sorted_klines[0].start.parse::<i64>().unwrap_or(0);
+            if let Some(start_val) = start_ms
+                && earliest_bar_time <= start_val
+            {
+                break;
+            }
+
+            current_end = Some(earliest_bar_time - 1);
+
+            // Safety check to prevent infinite loops
+            if page_count > 100 {
+                break;
             }
         }
 
-        Ok(bars)
+        // all_bars is now in chronological order (oldest to newest)
+        // If limit is specified and we have more bars, return the last N bars (most recent)
+        if let Some(limit_val) = limit {
+            let limit_usize = limit_val as usize;
+            if all_bars.len() > limit_usize {
+                let start_idx = all_bars.len() - limit_usize;
+                return Ok(all_bars[start_idx..].to_vec());
+            }
+        }
+
+        Ok(all_bars)
     }
 
     /// Requests trading fee rates for the specified product type and optional filters.
@@ -2542,10 +2662,12 @@ impl BybitHttpClient {
         &self,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<TradeTick>> {
         self.inner
-            .request_trades(product_type, instrument_id, limit)
+            .request_trades(product_type, instrument_id, start, end, limit)
             .await
     }
 
@@ -2565,12 +2687,20 @@ impl BybitHttpClient {
         &self,
         product_type: BybitProductType,
         bar_type: BarType,
-        start: Option<i64>,
-        end: Option<i64>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
+        timestamp_on_close: bool,
     ) -> anyhow::Result<Vec<Bar>> {
         self.inner
-            .request_bars(product_type, bar_type, start, end, limit)
+            .request_bars(
+                product_type,
+                bar_type,
+                start,
+                end,
+                limit,
+                timestamp_on_close,
+            )
             .await
     }
 

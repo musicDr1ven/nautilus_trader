@@ -1529,6 +1529,10 @@ impl BybitWebSocketClient {
 
                         let mut data_vec = Vec::new();
                         for kline in &msg.data {
+                            // Only process confirmed bars (not partial/building bars)
+                            if !kline.confirm {
+                                continue;
+                            }
                             match parse_ws_kline_bar(kline, instrument, bar_type, false, ts_init) {
                                 Ok(bar) => data_vec.push(Data::Bar(bar)),
                                 Err(e) => tracing::error!("Error parsing kline to bar: {e}"),

@@ -314,19 +314,21 @@ impl BybitHttpClient {
     }
 
     #[pyo3(name = "request_trades")]
-    #[pyo3(signature = (product_type, instrument_id, limit=None))]
+    #[pyo3(signature = (product_type, instrument_id, start=None, end=None, limit=None))]
     fn py_request_trades<'py>(
         &self,
         py: Python<'py>,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let trades = client
-                .request_trades(product_type, instrument_id, limit)
+                .request_trades(product_type, instrument_id, start, end, limit)
                 .await
                 .map_err(to_pyvalue_err)?;
 
@@ -342,21 +344,30 @@ impl BybitHttpClient {
     }
 
     #[pyo3(name = "request_bars")]
-    #[pyo3(signature = (product_type, bar_type, start=None, end=None, limit=None))]
+    #[pyo3(signature = (product_type, bar_type, start=None, end=None, limit=None, timestamp_on_close=true))]
+    #[allow(clippy::too_many_arguments)]
     fn py_request_bars<'py>(
         &self,
         py: Python<'py>,
         product_type: BybitProductType,
         bar_type: nautilus_model::data::BarType,
-        start: Option<i64>,
-        end: Option<i64>,
+        start: Option<DateTime<Utc>>,
+        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
+        timestamp_on_close: bool,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let bars = client
-                .request_bars(product_type, bar_type, start, end, limit)
+                .request_bars(
+                    product_type,
+                    bar_type,
+                    start,
+                    end,
+                    limit,
+                    timestamp_on_close,
+                )
                 .await
                 .map_err(to_pyvalue_err)?;
 
