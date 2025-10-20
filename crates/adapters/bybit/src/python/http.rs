@@ -314,21 +314,19 @@ impl BybitHttpClient {
     }
 
     #[pyo3(name = "request_trades")]
-    #[pyo3(signature = (product_type, instrument_id, start=None, end=None, limit=None))]
+    #[pyo3(signature = (product_type, instrument_id, limit=None))]
     fn py_request_trades<'py>(
         &self,
         py: Python<'py>,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> PyResult<Bound<'py, PyAny>> {
         let client = self.clone();
 
         pyo3_async_runtimes::tokio::future_into_py(py, async move {
             let trades = client
-                .request_trades(product_type, instrument_id, start, end, limit)
+                .request_trades(product_type, instrument_id, limit)
                 .await
                 .map_err(to_pyvalue_err)?;
 

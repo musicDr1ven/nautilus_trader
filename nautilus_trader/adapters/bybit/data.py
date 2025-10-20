@@ -339,12 +339,27 @@ class BybitDataClient(LiveMarketDataClient):
         if limit == 0 or limit > 1000:
             limit = 1000
 
-        if (self._clock.utc_now() - request.start) > pd.Timedelta(days=1):
+        # Bybit's recent-trade endpoint does not support start/end time parameters
+        # It always returns the most recent trades regardless of time range specified
+        # We fetch recent trades and filter client-side, but this only works for very recent windows
+        time_ago = self._clock.utc_now() - request.start
+
+        # Hard error for requests clearly outside the "recent trades" window
+        if time_ago > pd.Timedelta(hours=1):
             self._log.error(
-                "Cannot specify `start` older than 1 day for historical trades: "
-                "Bybit only provides '1 day old trades'",
+                f"Cannot request trades from {time_ago.total_seconds() / 3600:.1f}h ago: "
+                f"Bybit only provides recent trades (typically last few minutes). "
+                f"Use bars/klines for historical data.",
             )
             return
+
+        # Warn if requesting data that might not be in the recent trades window
+        if time_ago > pd.Timedelta(minutes=1):
+            self._log.warning(
+                f"Requesting trades from {time_ago.total_seconds() / 60:.1f} minutes ago. "
+                f"Bybit API only returns recent trades; older data may be unavailable. "
+                f"Consider using bars for historical data.",
+            )
 
         pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(request.instrument_id.value)
         product_type = nautilus_pyo3.bybit_product_type_from_symbol(
@@ -355,15 +370,25 @@ class BybitDataClient(LiveMarketDataClient):
             pyo3_trades = await self._http_client.request_trades(
                 product_type=product_type,
                 instrument_id=pyo3_instrument_id,
-                start=ensure_pydatetime_utc(request.start),
-                end=ensure_pydatetime_utc(request.end),
                 limit=limit,
             )
             trades = TradeTick.from_pyo3_list(pyo3_trades)
 
+            # Filter trades to only include those within the requested time window
+            # Bybit API returns recent trades regardless of time params, so we filter client-side
+            start_ns = request.start.value
+            end_ns = request.end.value
+            filtered_trades = [trade for trade in trades if start_ns <= trade.ts_event <= end_ns]
+
+            if len(filtered_trades) < len(trades):
+                self._log.debug(
+                    f"Filtered {len(trades) - len(filtered_trades)} trades outside "
+                    f"requested window [{request.start}, {request.end}]",
+                )
+
             self._handle_trade_ticks(
                 request.instrument_id,
-                trades,
+                filtered_trades,
                 request.id,
                 request.start,
                 request.end,

@@ -1567,12 +1567,12 @@ impl BybitHttpInnerClient {
 
     /// Request recent trade tick history for a given symbol.
     ///
-    /// **Important limitation**: Bybit's public API (`/v5/market/recent-trade`) only
-    /// returns the most recent trades (up to 1000). The `start` and `end` parameters
-    /// perform **client-side filtering only** after fetching these recent trades.
-    /// If the requested time window falls outside the most recent trades, this method
-    /// will return incomplete or empty results. For active markets, this typically
-    /// covers only the last few minutes.
+    /// Returns the most recent public trades from Bybit's `/v5/market/recent-trade` endpoint.
+    /// This endpoint only provides recent trades (up to 1000 most recent), typically covering
+    /// only the last few minutes for active markets.
+    ///
+    /// **Note**: For historical trade data with time ranges, use the klines endpoint instead.
+    /// The Bybit public API does not support fetching historical trades by time range.
     ///
     /// # Errors
     ///
@@ -1588,25 +1588,10 @@ impl BybitHttpInnerClient {
         &self,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<TradeTick>> {
         let instrument = self.instrument_from_cache(&instrument_id.symbol)?;
         let bybit_symbol = BybitSymbol::new(instrument_id.symbol.as_str())?;
-
-        // Warn if requesting trades older than a few minutes
-        if let Some(start_time) = start {
-            let age = chrono::Utc::now() - start_time;
-            if age > chrono::Duration::minutes(30) {
-                tracing::warn!(
-                    symbol = %instrument_id.symbol,
-                    age_minutes = age.num_minutes(),
-                    "Requesting trades older than 30 minutes may return incomplete results \
-                     as Bybit's public API only provides recent trades"
-                );
-            }
-        }
 
         let mut params_builder = BybitTradesParamsBuilder::default();
         params_builder.category(product_type);
@@ -1621,26 +1606,8 @@ impl BybitHttpInnerClient {
         let ts_init = self.generate_ts_init();
         let mut trades = Vec::new();
 
-        // Client-side filtering by timestamp
-        let start_ms = start.map(|dt| dt.timestamp_millis());
-        let end_ms = end.map(|dt| dt.timestamp_millis());
-
         for trade in response.result.list {
             if let Ok(trade_tick) = parse_trade_tick(&trade, &instrument, ts_init) {
-                let trade_time_ms = trade.time.parse::<i64>().unwrap_or(0);
-
-                // Apply client-side time filtering
-                if let Some(start_val) = start_ms
-                    && trade_time_ms < start_val
-                {
-                    continue;
-                }
-                if let Some(end_val) = end_ms
-                    && trade_time_ms > end_val
-                {
-                    continue;
-                }
-
                 trades.push(trade_tick);
             }
         }
@@ -2646,7 +2613,7 @@ impl BybitHttpClient {
         self.inner.request_instruments(product_type, symbol).await
     }
 
-    /// Request trade tick history for a given symbol.
+    /// Request recent trade tick history for a given symbol.
     ///
     /// # Errors
     ///
@@ -2662,12 +2629,10 @@ impl BybitHttpClient {
         &self,
         product_type: BybitProductType,
         instrument_id: InstrumentId,
-        start: Option<DateTime<Utc>>,
-        end: Option<DateTime<Utc>>,
         limit: Option<u32>,
     ) -> anyhow::Result<Vec<TradeTick>> {
         self.inner
-            .request_trades(product_type, instrument_id, start, end, limit)
+            .request_trades(product_type, instrument_id, limit)
             .await
     }
 
