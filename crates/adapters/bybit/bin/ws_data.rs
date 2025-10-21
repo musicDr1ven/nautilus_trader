@@ -83,6 +83,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     NautilusWsMessage::Deltas(deltas) => {
                         tracing::info!(instrument = %deltas.instrument_id, sequence = deltas.sequence, "orderbook deltas");
                     }
+                    NautilusWsMessage::FundingRates(rates) => {
+                        tracing::info!(count = rates.len(), "funding rate updates");
+                        for rate in rates {
+                            tracing::info!(
+                                instrument = %rate.instrument_id,
+                                rate = %rate.rate,
+                                next_funding = ?rate.next_funding_ns,
+                                "funding rate"
+                            );
+                        }
+                    }
                     NautilusWsMessage::OrderStatusReports(reports) => {
                         tracing::info!(count = reports.len(), "order status reports");
                         for report in reports {

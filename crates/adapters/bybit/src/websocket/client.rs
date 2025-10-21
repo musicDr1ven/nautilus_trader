@@ -27,6 +27,7 @@ use std::{
     time::Duration,
 };
 
+use ahash::AHashMap;
 use dashmap::DashMap;
 use nautilus_common::runtime::get_runtime;
 use nautilus_core::{
@@ -77,9 +78,10 @@ use crate::{
             BybitWsTickerLinearMsg, BybitWsTickerOptionMsg, BybitWsTradeMsg, NautilusWsMessage,
         },
         parse::{
-            parse_kline_topic, parse_millis_i64, parse_orderbook_deltas, parse_ws_account_state,
-            parse_ws_fill_report, parse_ws_kline_bar, parse_ws_order_status_report,
-            parse_ws_position_status_report, parse_ws_trade_tick,
+            parse_kline_topic, parse_millis_i64, parse_orderbook_deltas,
+            parse_ticker_linear_funding, parse_ws_account_state, parse_ws_fill_report,
+            parse_ws_kline_bar, parse_ws_order_status_report, parse_ws_position_status_report,
+            parse_ws_trade_tick,
         },
         subscription::SubscriptionState,
     },
@@ -88,6 +90,9 @@ use crate::{
 const MAX_ARGS_PER_SUBSCRIPTION_REQUEST: usize = 10;
 const DEFAULT_HEARTBEAT_SECS: u64 = 20;
 const WEBSOCKET_AUTH_WINDOW_MS: i64 = 5_000;
+
+/// Type alias for the funding rate cache.
+type FundingCache = Arc<RwLock<AHashMap<Ustr, (Option<String>, Option<String>)>>>;
 
 /// Determines if a Bybit WebSocket error should trigger a retry.
 fn should_retry_bybit_error(error: &BybitWsError) -> bool {
@@ -134,6 +139,7 @@ pub struct BybitWebSocketClient {
     instruments_cache: Arc<DashMap<InstrumentId, InstrumentAny>>,
     account_id: Option<AccountId>,
     quote_cache: Arc<RwLock<cache::QuoteCache>>,
+    funding_cache: FundingCache,
     retry_manager: Arc<RetryManager<BybitWsError>>,
     cancellation_token: CancellationToken,
 }
@@ -170,6 +176,7 @@ impl Clone for BybitWebSocketClient {
             instruments_cache: Arc::clone(&self.instruments_cache),
             account_id: self.account_id,
             quote_cache: Arc::clone(&self.quote_cache),
+            funding_cache: Arc::clone(&self.funding_cache),
             retry_manager: Arc::clone(&self.retry_manager),
             cancellation_token: self.cancellation_token.clone(),
         }
@@ -217,6 +224,7 @@ impl BybitWebSocketClient {
             instruments_cache: Arc::new(DashMap::new()),
             account_id: None,
             quote_cache: Arc::new(RwLock::new(cache::QuoteCache::new())),
+            funding_cache: Arc::new(RwLock::new(AHashMap::new())),
             retry_manager: Arc::new(
                 create_websocket_retry_manager().expect("Failed to create retry manager"),
             ),
@@ -253,6 +261,7 @@ impl BybitWebSocketClient {
             instruments_cache: Arc::new(DashMap::new()),
             account_id: None,
             quote_cache: Arc::new(RwLock::new(cache::QuoteCache::new())),
+            funding_cache: Arc::new(RwLock::new(AHashMap::new())),
             retry_manager: Arc::new(
                 create_websocket_retry_manager().expect("Failed to create retry manager"),
             ),
@@ -289,6 +298,7 @@ impl BybitWebSocketClient {
             instruments_cache: Arc::new(DashMap::new()),
             account_id: None,
             quote_cache: Arc::new(RwLock::new(cache::QuoteCache::new())),
+            funding_cache: Arc::new(RwLock::new(AHashMap::new())),
             retry_manager: Arc::new(
                 create_websocket_retry_manager().expect("Failed to create retry manager"),
             ),
@@ -365,6 +375,7 @@ impl BybitWebSocketClient {
         let requires_auth = self.requires_auth;
         let is_authenticated = Arc::clone(&self.is_authenticated);
         let quote_cache = Arc::clone(&self.quote_cache);
+        let funding_cache = Arc::clone(&self.funding_cache);
         let instruments = Arc::clone(&self.instruments_cache);
         let account_id = self.account_id;
         let product_type = self.product_type;
@@ -394,6 +405,7 @@ impl BybitWebSocketClient {
                         let is_authenticated_for_task = is_authenticated.clone();
                         let credential_for_task = credential.clone();
                         let quote_cache_for_task = quote_cache.clone();
+                        let funding_cache_for_task = funding_cache.clone();
                         let event_tx_for_task = event_tx.clone();
 
                         get_runtime().spawn(async move {
@@ -429,8 +441,9 @@ impl BybitWebSocketClient {
                                 return;
                             }
 
-                            // Clear the quote cache to prevent stale data after reconnection
+                            // Clear caches to prevent stale data after reconnection
                             quote_cache_for_task.write().await.clear();
+                            funding_cache_for_task.write().await.clear();
 
                             // Resubscribe to all topics
                             if let Err(e) = Self::resubscribe_all_inner(
@@ -456,6 +469,7 @@ impl BybitWebSocketClient {
                             account_id,
                             product_type,
                             &quote_cache,
+                            &funding_cache,
                         )
                         .await;
 
@@ -740,6 +754,14 @@ impl BybitWebSocketClient {
     pub async fn unsubscribe_ticker(&self, instrument_id: InstrumentId) -> BybitWsResult<()> {
         let raw_symbol = extract_raw_symbol(instrument_id.symbol.as_str());
         let topic = format!("tickers.{}", raw_symbol);
+
+        // Clear funding rate cache to ensure fresh data on resubscribe
+        let symbol = self.product_type.map_or_else(
+            || Ustr::from(instrument_id.symbol.as_str()),
+            |pt| make_bybit_symbol(raw_symbol, pt),
+        );
+        self.funding_cache.write().await.remove(&symbol);
+
         self.unsubscribe(vec![topic]).await
     }
 
@@ -1368,6 +1390,7 @@ impl BybitWebSocketClient {
         account_id: Option<AccountId>,
         product_type: Option<BybitProductType>,
         quote_cache: &Arc<RwLock<cache::QuoteCache>>,
+        funding_cache: &FundingCache,
     ) -> Vec<NautilusWsMessage> {
         let clock = get_atomic_clock_realtime();
         let mut result = Vec::new();
@@ -1448,6 +1471,36 @@ impl BybitWebSocketClient {
                             tracing::debug!(
                                 "Skipping partial ticker update: {e}, raw_data: {raw_data}"
                             );
+                        }
+                    }
+
+                    // Extract funding rate if available
+                    if msg.data.funding_rate.is_some() && msg.data.next_funding_time.is_some() {
+                        let cache_key = (
+                            msg.data.funding_rate.clone(),
+                            msg.data.next_funding_time.clone(),
+                        );
+
+                        let should_publish = {
+                            let cache = funding_cache.read().await;
+                            cache.get(&symbol) != Some(&cache_key)
+                        };
+
+                        if should_publish {
+                            match parse_ticker_linear_funding(
+                                &msg.data,
+                                instrument_id,
+                                ts_event,
+                                ts_init,
+                            ) {
+                                Ok(funding) => {
+                                    funding_cache.write().await.insert(symbol, cache_key);
+                                    result.push(NautilusWsMessage::FundingRates(vec![funding]));
+                                }
+                                Err(e) => {
+                                    tracing::debug!("Skipping funding rate update: {e}");
+                                }
+                            }
                         }
                     }
                 } else {

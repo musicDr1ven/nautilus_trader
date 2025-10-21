@@ -44,6 +44,7 @@ from nautilus_trader.live.cancellation import DEFAULT_FUTURE_CANCELLATION_TIMEOU
 from nautilus_trader.live.cancellation import cancel_tasks_with_timeout
 from nautilus_trader.live.data_client import LiveMarketDataClient
 from nautilus_trader.model.data import Bar
+from nautilus_trader.model.data import FundingRateUpdate
 from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.data import capsule_to_data
 from nautilus_trader.model.enums import BookType
@@ -318,13 +319,13 @@ class BybitDataClient(LiveMarketDataClient):
                 self._handle_data(data)
                 return
 
-            # Handle JSON messages (auth, subscription responses, raw/unhandled messages)
+            if isinstance(raw, nautilus_pyo3.FundingRateUpdate):
+                self._handle_data(FundingRateUpdate.from_pyo3(raw))
+                return
+
             msg_str = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
             if msg_str:
                 self._log.debug(f"WebSocket message: {msg_str}")
-                # These are likely auth/subscription confirmations or raw/unhandled messages
-                # Log them for debugging
-
         except Exception as e:
             self._log.error(f"Error handling websocket message: {e}")
 

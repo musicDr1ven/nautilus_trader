@@ -81,10 +81,10 @@ config_tester = DataTesterConfig(
     # subscribe_book_at_interval=True,
     # subscribe_quotes=True,
     # subscribe_trades=True,
-    # subscribe_funding_rates=True,
-    subscribe_bars=True,
+    subscribe_funding_rates=True,
+    # subscribe_bars=True,
     book_interval_ms=1,
-    request_bars=True,
+    # request_bars=True,
 )
 
 # Instantiate your actor

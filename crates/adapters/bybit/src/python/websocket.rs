@@ -176,6 +176,13 @@ impl BybitWebSocketClient {
                                 call_python(py, &callback, py_obj);
                             });
                         }
+                        NautilusWsMessage::FundingRates(rates) => {
+                            for rate in rates {
+                                call_python_with_data(&callback, move |py| {
+                                    rate.into_py_any(py).map(|obj| obj.into_bound(py))
+                                });
+                            }
+                        }
                         NautilusWsMessage::OrderStatusReports(reports) => {
                             for report in reports {
                                 call_python_with_data(&callback, move |py| {
