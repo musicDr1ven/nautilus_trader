@@ -355,10 +355,14 @@ class BybitExecutionClient(LiveExecutionClient):
             await self._http_client.set_margin_mode(self._margin_mode)  # type: ignore[attr-defined]
             self._log.info(f"Set account margin mode to {self._margin_mode}")
         except Exception as e:
-            if "needs to be equal to or greater than" in str(e):
+            error_msg = str(e).lower()
+            if "not been modified" in error_msg:
+                self._log.info(f"Margin mode already set to {self._margin_mode}")
+            elif "needs to be equal to or greater than" in error_msg:
                 self._log.warning(f"Cannot set margin mode: {e}")
             else:
-                self._log.info(f"Margin mode already set or not modified: {e}")
+                self._log.error(f"Failed to set margin mode: {e}")
+                raise
 
     # -- EXECUTION REPORTS ------------------------------------------------------------------------
 
