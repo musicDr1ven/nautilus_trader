@@ -452,8 +452,8 @@ impl BybitWebSocketClient {
                             )
                             .await
                             {
-                                tracing::error!("Failed to restore subscriptions after reconnection: {err}");
-                                let error = BybitWebSocketError::from_message(err.to_string());
+                                tracing::error!("Failed to restore subscriptions after reconnection: {e}");
+                                let error = BybitWebSocketError::from_message(e.to_string());
                                 let _ = event_tx_for_task.send(NautilusWsMessage::Error(error));
                             } else {
                                 tracing::info!("Restored subscriptions after reconnection");
@@ -481,8 +481,8 @@ impl BybitWebSocketClient {
                         }
                     }
                     Ok(None) => {}
-                    Err(err) => {
-                        let error = BybitWebSocketError::from_message(err.to_string());
+                    Err(e) => {
+                        let error = BybitWebSocketError::from_message(e.to_string());
                         if event_tx.send(NautilusWsMessage::Error(error)).is_err() {
                             break;
                         }

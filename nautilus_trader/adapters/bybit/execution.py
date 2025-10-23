@@ -23,8 +23,6 @@ WebSocket clients exposed via PyO3 for performance.
 
 import asyncio
 import os
-import sys
-import traceback
 from typing import Any
 
 from nautilus_trader.accounting.factory import AccountFactory
@@ -40,6 +38,7 @@ from nautilus_trader.core import nautilus_pyo3
 from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.core.datetime import ensure_pydatetime_utc
 from nautilus_trader.core.nautilus_pyo3 import BybitAccountType
+from nautilus_trader.core.nautilus_pyo3 import BybitPositionMode
 from nautilus_trader.core.nautilus_pyo3 import BybitProductType
 from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import BatchCancelOrders
@@ -305,8 +304,61 @@ class BybitExecutionClient(LiveExecutionClient):
                 reported=True,
                 ts_event=self._clock.timestamp_ns(),
             )
+
+            await self._apply_account_configuration()
+
         except Exception as e:
             self._log.error(f"Failed to update account state: {e}")
+
+    async def _apply_account_configuration(self) -> None:
+        if self._futures_leverages:
+            await self._apply_leverage_settings()
+
+        if self._position_mode:
+            await self._apply_position_mode_settings()
+
+        if self._margin_mode:
+            await self._apply_margin_mode_setting()
+
+    async def _apply_leverage_settings(self) -> None:
+        if self._futures_leverages is None:
+            return
+
+        tasks = []
+        for symbol_str, leverage in self._futures_leverages.items():
+            try:
+                product_type = nautilus_pyo3.bybit_product_type_from_symbol(symbol_str)
+                if product_type in (BybitProductType.LINEAR, BybitProductType.INVERSE):
+                    tasks.append(self.set_leverage(symbol_str, leverage))
+            except Exception as e:
+                self._log.warning(f"Failed to parse symbol {symbol_str}: {e}")
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _apply_position_mode_settings(self) -> None:
+        if self._position_mode is None:
+            return
+
+        tasks = []
+        for symbol_str, mode in self._position_mode.items():
+            try:
+                product_type = nautilus_pyo3.bybit_product_type_from_symbol(symbol_str)
+                if product_type in (BybitProductType.LINEAR, BybitProductType.INVERSE):
+                    tasks.append(self.set_position_mode(symbol_str, mode))
+            except Exception as e:
+                self._log.warning(f"Failed to parse symbol {symbol_str}: {e}")
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _apply_margin_mode_setting(self) -> None:
+        try:
+            await self._http_client.set_margin_mode(self._margin_mode)  # type: ignore[attr-defined]
+            self._log.info(f"Set account margin mode to {self._margin_mode}")
+        except Exception as e:
+            if "needs to be equal to or greater than" in str(e):
+                self._log.warning(f"Cannot set margin mode: {e}")
+            else:
+                self._log.info(f"Margin mode already set or not modified: {e}")
 
     # -- EXECUTION REPORTS ------------------------------------------------------------------------
 
@@ -344,10 +396,10 @@ class BybitExecutionClient(LiveExecutionClient):
                 report = OrderStatusReport.from_pyo3(pyo3_report)
                 self._log.debug(f"Received {report}", LogColor.MAGENTA)
                 reports.append(report)
-        except ValueError as exc:
-            if "request canceled" in str(exc).lower():
+        except ValueError as e:
+            if "request canceled" in str(e).lower():
                 self._log.debug("OrderStatusReports request cancelled during shutdown")
-            elif "symbol` must be initialized" in str(exc):
+            elif "symbol` must be initialized" in str(e):
                 self._log.warning(
                     "Order history contains instruments not in cache - "
                     "this is expected if orders exist for uncached product types or delisted symbols. "
@@ -355,22 +407,9 @@ class BybitExecutionClient(LiveExecutionClient):
                     LogColor.YELLOW,
                 )
             else:
-                exc_type, exc_value, exc_tb = sys.exc_info()
-                tb_lines = traceback.format_exception(exc_type, exc_value, exc_tb)
-                full_trace = "".join(tb_lines)
-                self._log.error(
-                    f"Failed to generate OrderStatusReports: {exc}\n"
-                    f"Full traceback (all lines):\n{full_trace}",
-                )
+                self._log.exception("Failed to generate OrderStatusReports", e)
         except Exception as e:
-            exc_type, exc_value, exc_tb = sys.exc_info()
-            # Format the full traceback without any line collapsing
-            tb_lines = traceback.format_exception(exc_type, exc_value, exc_tb)
-            full_trace = "".join(tb_lines)
-            self._log.error(
-                f"Failed to generate OrderStatusReports: {e}\n"
-                f"Full traceback (all lines):\n{full_trace}",
-            )
+            self._log.exception("Failed to generate OrderStatusReports", e)
 
         len_reports = len(reports)
         plural = "" if len_reports == 1 else "s"
@@ -433,27 +472,24 @@ class BybitExecutionClient(LiveExecutionClient):
             report = OrderStatusReport.from_pyo3(pyo3_report)
             self._log.debug(f"Received {report}", LogColor.MAGENTA)
             return report
-        except ValueError as exc:
-            if "request canceled" in str(exc).lower():
+        except ValueError as e:
+            if "request canceled" in str(e).lower():
                 self._log.debug("OrderStatusReport query cancelled during shutdown")
-            elif "not found in cache" in str(exc):
+            elif "not found in cache" in str(e):
                 self._log.warning(
                     f"Instrument {command.instrument_id} not in cache when querying order {command.client_order_id!r} - "
                     "order may have been placed before instruments were cached",
                     LogColor.YELLOW,
                 )
-            elif "must be initialized" in str(exc):
+            elif "must be initialized" in str(e):
                 self._log.error(
-                    f"PyO3 field initialization error querying order {command.client_order_id!r}: {exc}. "
+                    f"PyO3 field initialization error querying order {command.client_order_id!r}: {e}. "
                     f"This may indicate an instrument caching issue for {command.instrument_id}",
                 )
             else:
-                exc_type, exc_value, exc_tb = sys.exc_info()
-                tb_lines = traceback.format_exception(exc_type, exc_value, exc_tb)
-                full_trace = "".join(tb_lines)
-                self._log.error(
-                    f"Failed to generate OrderStatusReport for {command.client_order_id!r}: {exc}\n"
-                    f"Full traceback:\n{full_trace}",
+                self._log.exception(
+                    f"Failed to generate OrderStatusReport for {command.client_order_id!r}",
+                    e,
                 )
             return None
         except Exception as e:
@@ -547,20 +583,84 @@ class BybitExecutionClient(LiveExecutionClient):
                 self._log.debug(f"Received {report}", LogColor.MAGENTA)
                 reports.append(report)
         except Exception as e:
-            exc_type, exc_value, exc_tb = sys.exc_info()
-            # Format the full traceback without any line collapsing
-            tb_lines = traceback.format_exception(exc_type, exc_value, exc_tb)
-            full_trace = "".join(tb_lines)
-            self._log.error(
-                f"Failed to generate PositionStatusReports: {e}\n"
-                f"Full traceback (all lines):\n{full_trace}",
-            )
+            self._log.exception("Failed to generate PositionStatusReports", e)
 
         len_reports = len(reports)
         plural = "" if len_reports == 1 else "s"
         self._log.info(f"Received {len(reports)} PositionStatusReport{plural}")
 
         return reports
+
+    async def set_leverage(
+        self,
+        symbol: str,
+        leverage: int,
+    ) -> None:
+        """
+        Set leverage for a symbol.
+
+        Parameters
+        ----------
+        symbol : str
+            The symbol string (e.g., "ETHUSDT-LINEAR").
+        leverage : int
+            The leverage value to set.
+
+        """
+        try:
+            raw_symbol = nautilus_pyo3.bybit_extract_raw_symbol(symbol)
+            product_type = nautilus_pyo3.bybit_product_type_from_symbol(symbol)
+
+            await self._http_client.set_leverage(  # type: ignore[attr-defined]
+                product_type=product_type,
+                symbol=raw_symbol,
+                buy_leverage=str(leverage),
+                sell_leverage=str(leverage),
+            )
+            self._log.info(f"Set symbol `{symbol}` leverage to `{leverage}`")
+        except Exception as e:
+            error_msg = str(e).lower()
+            # Bybit error code 110043: Set leverage has not been modified (already set)
+            if "110043" in error_msg or "not been modified" in error_msg:
+                self._log.info(f"Symbol `{symbol}` leverage already set to `{leverage}`")
+            else:
+                self._log.error(f"Failed to set leverage for {symbol}: {e}")
+                raise
+
+    async def set_position_mode(
+        self,
+        symbol: str,
+        mode: BybitPositionMode,
+    ) -> None:
+        """
+        Set position mode for a symbol.
+
+        Parameters
+        ----------
+        symbol : str
+            The symbol string (e.g., "ETHUSDT-LINEAR").
+        mode : BybitPositionMode
+            The position mode to set.
+
+        """
+        try:
+            raw_symbol = nautilus_pyo3.bybit_extract_raw_symbol(symbol)
+            product_type = nautilus_pyo3.bybit_product_type_from_symbol(symbol)
+
+            await self._http_client.switch_mode(  # type: ignore[attr-defined]
+                product_type=product_type,
+                mode=mode,
+                symbol=raw_symbol,
+            )
+            self._log.info(f"Set symbol `{symbol}` position mode to `{mode}`")
+        except Exception as e:
+            error_msg = str(e).lower()
+            # Bybit error code 110025: Position mode has not been modified (already set)
+            if "110025" in error_msg or "not been modified" in error_msg:
+                self._log.info(f"Symbol `{symbol}` position mode already set to `{mode}`")
+            else:
+                self._log.error(f"Failed to set position mode for {symbol}: {e}")
+                raise
 
     # -- COMMAND HANDLERS -------------------------------------------------------------------------
 

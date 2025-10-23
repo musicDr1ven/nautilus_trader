@@ -749,6 +749,54 @@ pub struct BybitPosition {
 /// - <https://bybit-exchange.github.io/docs/v5/position/position-info>
 pub type BybitPositionListResponse = BybitCursorListResponse<BybitPosition>;
 
+/// Reason detail for set margin mode failures.
+///
+/// # References
+/// - <https://bybit-exchange.github.io/docs/v5/account/set-margin-mode>
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BybitSetMarginModeReason {
+    pub reason_code: String,
+    pub reason_msg: String,
+}
+
+/// Result payload for set margin mode operation.
+///
+/// # References
+/// - <https://bybit-exchange.github.io/docs/v5/account/set-margin-mode>
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BybitSetMarginModeResult {
+    #[serde(default)]
+    pub reasons: Vec<BybitSetMarginModeReason>,
+}
+
+/// Response alias for set margin mode requests.
+///
+/// # References
+/// - <https://bybit-exchange.github.io/docs/v5/account/set-margin-mode>
+pub type BybitSetMarginModeResponse = BybitResponse<BybitSetMarginModeResult>;
+
+/// Empty result for set leverage operation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BybitSetLeverageResult {}
+
+/// Response alias for set leverage requests.
+///
+/// # References
+/// - <https://bybit-exchange.github.io/docs/v5/position/leverage>
+pub type BybitSetLeverageResponse = BybitResponse<BybitSetLeverageResult>;
+
+/// Empty result for switch mode operation.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct BybitSwitchModeResult {}
+
+/// Response alias for switch mode requests.
+///
+/// # References
+/// - <https://bybit-exchange.github.io/docs/v5/position/position-mode>
+pub type BybitSwitchModeResponse = BybitResponse<BybitSwitchModeResult>;
+
 ////////////////////////////////////////////////////////////////////////////////
 // Tests
 ////////////////////////////////////////////////////////////////////////////////

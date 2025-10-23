@@ -57,6 +57,7 @@ use super::{
         BybitInstrumentLinearResponse, BybitInstrumentOptionResponse, BybitInstrumentSpotResponse,
         BybitKlinesResponse, BybitOpenOrdersResponse, BybitOrderHistoryResponse,
         BybitPlaceOrderResponse, BybitPositionListResponse, BybitServerTimeResponse,
+        BybitSetLeverageResponse, BybitSetMarginModeResponse, BybitSwitchModeResponse,
         BybitTradeHistoryResponse, BybitTradesResponse, BybitWalletBalanceResponse,
     },
     query::{
@@ -66,8 +67,9 @@ use super::{
         BybitCancelOrderParamsBuilder, BybitFeeRateParams, BybitInstrumentsInfoParams,
         BybitKlinesParams, BybitKlinesParamsBuilder, BybitOpenOrdersParamsBuilder,
         BybitOrderHistoryParamsBuilder, BybitPlaceOrderParamsBuilder, BybitPositionListParams,
-        BybitTickersParams, BybitTradeHistoryParams, BybitTradesParams, BybitTradesParamsBuilder,
-        BybitWalletBalanceParams,
+        BybitSetLeverageParamsBuilder, BybitSetMarginModeParamsBuilder,
+        BybitSwitchModeParamsBuilder, BybitTickersParams, BybitTradeHistoryParams,
+        BybitTradesParams, BybitTradesParamsBuilder, BybitWalletBalanceParams,
     },
 };
 use crate::{
@@ -75,8 +77,8 @@ use crate::{
         consts::BYBIT_NAUTILUS_BROKER_ID,
         credential::Credential,
         enums::{
-            BybitAccountType, BybitEnvironment, BybitKlineInterval, BybitOrderSide, BybitOrderType,
-            BybitProductType, BybitTimeInForce,
+            BybitAccountType, BybitEnvironment, BybitKlineInterval, BybitMarginMode,
+            BybitOrderSide, BybitOrderType, BybitPositionMode, BybitProductType, BybitTimeInForce,
         },
         models::BybitResponse,
         parse::{
@@ -606,6 +608,120 @@ impl BybitHttpInnerClient {
     ) -> Result<BybitFeeRateResponse, BybitHttpError> {
         let path = Self::build_path("/v5/account/fee-rate", params)?;
         self.send_request(Method::GET, &path, None, true).await
+    }
+
+    /// Sets the margin mode for the account.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - The request fails.
+    /// - The API returns an error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if required parameters are not provided (should not happen with current implementation).
+    ///
+    /// # References
+    ///
+    /// - <https://bybit-exchange.github.io/docs/v5/account/set-margin-mode>
+    pub async fn http_set_margin_mode(
+        &self,
+        margin_mode: BybitMarginMode,
+    ) -> Result<BybitSetMarginModeResponse, BybitHttpError> {
+        let params = BybitSetMarginModeParamsBuilder::default()
+            .set_margin_mode(margin_mode)
+            .build()
+            .expect("Failed to build BybitSetMarginModeParams");
+
+        let body = serde_json::to_vec(&params)?;
+        self.send_request(
+            Method::POST,
+            "/v5/account/set-margin-mode",
+            Some(body),
+            true,
+        )
+        .await
+    }
+
+    /// Sets leverage for a symbol.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - The request fails.
+    /// - The API returns an error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if required parameters are not provided (should not happen with current implementation).
+    ///
+    /// # References
+    ///
+    /// - <https://bybit-exchange.github.io/docs/v5/position/leverage>
+    pub async fn http_set_leverage(
+        &self,
+        product_type: BybitProductType,
+        symbol: &str,
+        buy_leverage: &str,
+        sell_leverage: &str,
+    ) -> Result<BybitSetLeverageResponse, BybitHttpError> {
+        let params = BybitSetLeverageParamsBuilder::default()
+            .category(product_type)
+            .symbol(symbol.to_string())
+            .buy_leverage(buy_leverage.to_string())
+            .sell_leverage(sell_leverage.to_string())
+            .build()
+            .expect("Failed to build BybitSetLeverageParams");
+
+        let body = serde_json::to_vec(&params)?;
+        self.send_request(Method::POST, "/v5/position/set-leverage", Some(body), true)
+            .await
+    }
+
+    /// Switches position mode for a product type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - The request fails.
+    /// - The API returns an error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if required parameters are not provided (should not happen with current implementation).
+    ///
+    /// # References
+    ///
+    /// - <https://bybit-exchange.github.io/docs/v5/position/position-mode>
+    pub async fn http_switch_mode(
+        &self,
+        product_type: BybitProductType,
+        mode: BybitPositionMode,
+        symbol: Option<String>,
+        coin: Option<String>,
+    ) -> Result<BybitSwitchModeResponse, BybitHttpError> {
+        let mut builder = BybitSwitchModeParamsBuilder::default();
+        builder.category(product_type);
+        builder.mode(mode);
+
+        if let Some(s) = symbol {
+            builder.symbol(s);
+        }
+        if let Some(c) = coin {
+            builder.coin(c);
+        }
+
+        let params = builder
+            .build()
+            .expect("Failed to build BybitSwitchModeParams");
+
+        let body = serde_json::to_vec(&params)?;
+        self.send_request(Method::POST, "/v5/position/switch-mode", Some(body), true)
+            .await
     }
 
     /// Fetches tickers for market data.
@@ -2760,6 +2876,85 @@ impl BybitHttpClient {
     ) -> anyhow::Result<Vec<BybitFeeRate>> {
         self.inner
             .request_fee_rates(product_type, symbol, base_coin)
+            .await
+    }
+
+    /// Sets the margin mode for the account.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - The request fails.
+    /// - The API returns an error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if required parameters are not provided (should not happen with current implementation).
+    ///
+    /// # References
+    ///
+    /// - <https://bybit-exchange.github.io/docs/v5/account/set-margin-mode>
+    pub async fn http_set_margin_mode(
+        &self,
+        margin_mode: BybitMarginMode,
+    ) -> Result<BybitSetMarginModeResponse, BybitHttpError> {
+        self.inner.http_set_margin_mode(margin_mode).await
+    }
+
+    /// Sets leverage for a symbol.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - The request fails.
+    /// - The API returns an error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if required parameters are not provided (should not happen with current implementation).
+    ///
+    /// # References
+    ///
+    /// - <https://bybit-exchange.github.io/docs/v5/position/leverage>
+    pub async fn http_set_leverage(
+        &self,
+        product_type: BybitProductType,
+        symbol: &str,
+        buy_leverage: &str,
+        sell_leverage: &str,
+    ) -> Result<BybitSetLeverageResponse, BybitHttpError> {
+        self.inner
+            .http_set_leverage(product_type, symbol, buy_leverage, sell_leverage)
+            .await
+    }
+
+    /// Switches position mode for a product type.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if:
+    /// - Credentials are missing.
+    /// - The request fails.
+    /// - The API returns an error.
+    ///
+    /// # Panics
+    ///
+    /// Panics if required parameters are not provided (should not happen with current implementation).
+    ///
+    /// # References
+    ///
+    /// - <https://bybit-exchange.github.io/docs/v5/position/position-mode>
+    pub async fn http_switch_mode(
+        &self,
+        product_type: BybitProductType,
+        mode: BybitPositionMode,
+        symbol: Option<String>,
+        coin: Option<String>,
+    ) -> Result<BybitSwitchModeResponse, BybitHttpError> {
+        self.inner
+            .http_switch_mode(product_type, mode, symbol, coin)
             .await
     }
 }
