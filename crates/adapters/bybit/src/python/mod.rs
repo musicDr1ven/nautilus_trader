@@ -17,6 +17,7 @@
 
 pub mod enums;
 pub mod http;
+pub mod params;
 pub mod urls;
 pub mod websocket;
 
@@ -96,6 +97,8 @@ pub fn bybit(_: Python<'_>, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_class::<crate::http::models::BybitTickerData>()?;
     m.add_class::<crate::websocket::client::BybitWebSocketClient>()?;
     m.add_class::<crate::websocket::messages::BybitWebSocketError>()?;
+    m.add_class::<params::BybitWsPlaceOrderParams>()?;
+    m.add_class::<params::BybitWsAmendOrderParams>()?;
     m.add_function(wrap_pyfunction!(urls::py_get_bybit_http_base_url, m)?)?;
     m.add_function(wrap_pyfunction!(urls::py_get_bybit_ws_url_public, m)?)?;
     m.add_function(wrap_pyfunction!(urls::py_get_bybit_ws_url_private, m)?)?;

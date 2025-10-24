@@ -88,33 +88,59 @@ impl BybitWebSocketClient {
 
     #[staticmethod]
     #[pyo3(name = "new_private")]
-    #[pyo3(signature = (environment, api_key, api_secret, url=None, heartbeat=None))]
+    #[pyo3(signature = (environment, api_key=None, api_secret=None, url=None, heartbeat=None))]
     fn py_new_private(
         environment: BybitEnvironment,
-        api_key: String,
-        api_secret: String,
+        api_key: Option<String>,
+        api_secret: Option<String>,
         url: Option<String>,
         heartbeat: Option<u64>,
     ) -> Self {
+        // If both api_key and api_secret are None, try to load from environment
+        let (final_api_key, final_api_secret) = if api_key.is_none() && api_secret.is_none() {
+            let (key_var, secret_var) = match environment {
+                BybitEnvironment::Testnet => ("BYBIT_TESTNET_API_KEY", "BYBIT_TESTNET_API_SECRET"),
+                _ => ("BYBIT_API_KEY", "BYBIT_API_SECRET"),
+            };
+            let env_key = std::env::var(key_var).ok().unwrap_or_default();
+            let env_secret = std::env::var(secret_var).ok().unwrap_or_default();
+            (env_key, env_secret)
+        } else {
+            (api_key.unwrap_or_default(), api_secret.unwrap_or_default())
+        };
+
         tracing::debug!(
             "Creating private WebSocket client with API key: {}",
-            &api_key[..api_key.len().min(10)]
+            &final_api_key[..final_api_key.len().min(10)]
         );
-        let credential = Credential::new(api_key, api_secret);
+        let credential = Credential::new(final_api_key, final_api_secret);
         Self::new_private(environment, credential, url, heartbeat)
     }
 
     #[staticmethod]
     #[pyo3(name = "new_trade")]
-    #[pyo3(signature = (environment, api_key, api_secret, url=None, heartbeat=None))]
+    #[pyo3(signature = (environment, api_key=None, api_secret=None, url=None, heartbeat=None))]
     fn py_new_trade(
         environment: BybitEnvironment,
-        api_key: String,
-        api_secret: String,
+        api_key: Option<String>,
+        api_secret: Option<String>,
         url: Option<String>,
         heartbeat: Option<u64>,
     ) -> Self {
-        let credential = Credential::new(api_key, api_secret);
+        // If both api_key and api_secret are None, try to load from environment
+        let (final_api_key, final_api_secret) = if api_key.is_none() && api_secret.is_none() {
+            let (key_var, secret_var) = match environment {
+                BybitEnvironment::Testnet => ("BYBIT_TESTNET_API_KEY", "BYBIT_TESTNET_API_SECRET"),
+                _ => ("BYBIT_API_KEY", "BYBIT_API_SECRET"),
+            };
+            let env_key = std::env::var(key_var).ok().unwrap_or_default();
+            let env_secret = std::env::var(secret_var).ok().unwrap_or_default();
+            (env_key, env_secret)
+        } else {
+            (api_key.unwrap_or_default(), api_secret.unwrap_or_default())
+        };
+
+        let credential = Credential::new(final_api_key, final_api_secret);
         Self::new_trade(environment, credential, url, heartbeat)
     }
 
@@ -677,6 +703,112 @@ impl BybitWebSocketClient {
                 )
                 .await
                 .map_err(to_pyruntime_err)?;
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "build_place_order_params")]
+    #[allow(clippy::too_many_arguments)]
+    fn py_build_place_order_params(
+        &self,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+        order_side: OrderSide,
+        order_type: OrderType,
+        quantity: Quantity,
+        time_in_force: Option<TimeInForce>,
+        price: Option<Price>,
+        trigger_price: Option<Price>,
+        post_only: Option<bool>,
+        reduce_only: Option<bool>,
+    ) -> PyResult<crate::python::params::BybitWsPlaceOrderParams> {
+        let params = self
+            .build_place_order_params(
+                product_type,
+                instrument_id,
+                client_order_id,
+                order_side,
+                order_type,
+                quantity,
+                time_in_force,
+                price,
+                trigger_price,
+                post_only,
+                reduce_only,
+            )
+            .map_err(to_pyruntime_err)?;
+        Ok(params.into())
+    }
+
+    #[pyo3(name = "build_amend_order_params")]
+    #[allow(clippy::too_many_arguments)]
+    fn py_build_amend_order_params(
+        &self,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId,
+        venue_order_id: Option<VenueOrderId>,
+        client_order_id: Option<ClientOrderId>,
+        quantity: Option<Quantity>,
+        price: Option<Price>,
+    ) -> PyResult<crate::python::params::BybitWsAmendOrderParams> {
+        let params = self
+            .build_amend_order_params(
+                product_type,
+                instrument_id,
+                venue_order_id,
+                client_order_id,
+                quantity,
+                price,
+            )
+            .map_err(to_pyruntime_err)?;
+        Ok(params.into())
+    }
+
+    #[pyo3(name = "batch_place_orders")]
+    fn py_batch_place_orders<'py>(
+        &self,
+        py: Python<'py>,
+        orders: Vec<crate::python::params::BybitWsPlaceOrderParams>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let order_params: Vec<_> = orders
+                .into_iter()
+                .map(|p| p.try_into())
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(to_pyruntime_err)?;
+
+            client
+                .batch_place_orders(order_params)
+                .await
+                .map_err(to_pyruntime_err)?;
+
+            Ok(())
+        })
+    }
+
+    #[pyo3(name = "batch_modify_orders")]
+    fn py_batch_modify_orders<'py>(
+        &self,
+        py: Python<'py>,
+        orders: Vec<crate::python::params::BybitWsAmendOrderParams>,
+    ) -> PyResult<Bound<'py, PyAny>> {
+        let client = self.clone();
+
+        pyo3_async_runtimes::tokio::future_into_py(py, async move {
+            let order_params: Vec<_> = orders
+                .into_iter()
+                .map(|p| p.try_into())
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(to_pyruntime_err)?;
+
+            client
+                .batch_amend_orders(order_params)
+                .await
+                .map_err(to_pyruntime_err)?;
+
             Ok(())
         })
     }

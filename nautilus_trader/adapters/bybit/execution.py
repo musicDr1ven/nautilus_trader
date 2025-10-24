@@ -22,7 +22,6 @@ WebSocket clients exposed via PyO3 for performance.
 """
 
 import asyncio
-import os
 from typing import Any
 
 from nautilus_trader.accounting.factory import AccountFactory
@@ -35,12 +34,10 @@ from nautilus_trader.common.component import MessageBus
 from nautilus_trader.common.enums import LogColor
 from nautilus_trader.common.enums import LogLevel
 from nautilus_trader.core import nautilus_pyo3
-from nautilus_trader.core.correctness import PyCondition
 from nautilus_trader.core.datetime import ensure_pydatetime_utc
 from nautilus_trader.core.nautilus_pyo3 import BybitAccountType
 from nautilus_trader.core.nautilus_pyo3 import BybitPositionMode
 from nautilus_trader.core.nautilus_pyo3 import BybitProductType
-from nautilus_trader.core.uuid import UUID4
 from nautilus_trader.execution.messages import BatchCancelOrders
 from nautilus_trader.execution.messages import CancelAllOrders
 from nautilus_trader.execution.messages import CancelOrder
@@ -111,10 +108,9 @@ class BybitExecutionClient(LiveExecutionClient):
         config: BybitExecClientConfig,
         name: str | None,
     ) -> None:
-        PyCondition.not_empty(config.product_types, "config.product_types")
-        assert config.product_types is not None  # Type narrowing for mypy
+        product_types = config.product_types or (BybitProductType.SPOT,)
 
-        if set(config.product_types) == {BybitProductType.SPOT}:
+        if set(product_types) == {BybitProductType.SPOT}:
             self._account_type = AccountType.CASH
             # Bybit SPOT accounts support margin trading (borrowing)
             AccountFactory.register_cash_borrowing(BYBIT_VENUE.value)
@@ -137,7 +133,7 @@ class BybitExecutionClient(LiveExecutionClient):
 
         # Configuration
         self._config = config
-        self._product_types = list(config.product_types)
+        self._product_types = list(product_types)
         self._use_gtd = config.use_gtd
         self._use_ws_execution_fast = config.use_ws_execution_fast
         self._use_http_batch_api = config.use_http_batch_api
@@ -178,18 +174,11 @@ class BybitExecutionClient(LiveExecutionClient):
             else nautilus_pyo3.BybitEnvironment.MAINNET
         )
 
-        ws_api_key: str = config.api_key or os.getenv("BYBIT_API_KEY") or ""
-        ws_api_secret: str = config.api_secret or os.getenv("BYBIT_API_SECRET") or ""
-        self._log.info(
-            f"WebSocket API key: {ws_api_key[:10] if ws_api_key else 'EMPTY'}",
-            LogColor.BLUE,
-        )
-
         # WebSocket API - Private channel
         self._ws_private_client = nautilus_pyo3.BybitWebSocketClient.new_private(
             environment=environment,
-            api_key=ws_api_key,
-            api_secret=ws_api_secret,
+            api_key=config.api_key,
+            api_secret=config.api_secret,
             url=config.base_url_ws_private,
             heartbeat=20,
         )
@@ -199,8 +188,8 @@ class BybitExecutionClient(LiveExecutionClient):
         self._ws_trade_client: nautilus_pyo3.BybitWebSocketClient = (
             nautilus_pyo3.BybitWebSocketClient.new_trade(
                 environment=environment,
-                api_key=ws_api_key,
-                api_secret=ws_api_secret,
+                api_key=config.api_key,
+                api_secret=config.api_secret,
                 url=config.base_url_ws_trade,
                 heartbeat=20,
             )
@@ -730,16 +719,64 @@ class BybitExecutionClient(LiveExecutionClient):
             )
 
     async def _submit_order_list(self, command: SubmitOrderList) -> None:
-        # Submit orders one by one (batch submission can be added later)
+        if not command.order_list.orders:
+            return
+
+        now_ns = self._clock.timestamp_ns()
+        order_params = []
+
         for order in command.order_list.orders:
-            submit_order = SubmitOrder(
-                trader_id=command.trader_id,
-                strategy_id=command.strategy_id,
-                order=order,
-                command_id=UUID4(),
-                ts_init=self._clock.timestamp_ns(),
+            if order.is_closed:
+                self._log.warning(f"Cannot submit already closed order: {order}")
+                continue
+
+            self.generate_order_submitted(
+                strategy_id=order.strategy_id,
+                instrument_id=order.instrument_id,
+                client_order_id=order.client_order_id,
+                ts_event=now_ns,
             )
-            await self._submit_order(submit_order)
+
+            pyo3_instrument_id = nautilus_pyo3.InstrumentId.from_str(order.instrument_id.value)
+            pyo3_client_order_id = nautilus_pyo3.ClientOrderId(order.client_order_id.value)
+            pyo3_order_side = nautilus_pyo3.OrderSide(order.side.value)
+            pyo3_order_type = nautilus_pyo3.OrderType(order.order_type.value)
+            pyo3_quantity = nautilus_pyo3.Quantity.from_str(str(order.quantity))
+            pyo3_time_in_force = (
+                nautilus_pyo3.TimeInForce(order.time_in_force.value)
+                if order.time_in_force
+                else None
+            )
+            pyo3_price = nautilus_pyo3.Price.from_str(str(order.price)) if order.has_price else None
+            pyo3_trigger_price = (
+                nautilus_pyo3.Price.from_str(str(order.trigger_price))
+                if order.has_trigger_price
+                else None
+            )
+            post_only = order.is_post_only
+            reduce_only = order.is_reduce_only
+
+            product_type = nautilus_pyo3.bybit_product_type_from_symbol(
+                order.instrument_id.symbol.value,
+            )
+
+            params = self._ws_trade_client.build_place_order_params(
+                product_type=product_type,
+                instrument_id=pyo3_instrument_id,
+                client_order_id=pyo3_client_order_id,
+                order_side=pyo3_order_side,
+                order_type=pyo3_order_type,
+                quantity=pyo3_quantity,
+                time_in_force=pyo3_time_in_force,
+                price=pyo3_price,
+                trigger_price=pyo3_trigger_price,
+                post_only=post_only,
+                reduce_only=reduce_only,
+            )
+            order_params.append(params)
+
+        if order_params:
+            await self._ws_trade_client.batch_place_orders(order_params)
 
     async def _modify_order(self, command: ModifyOrder) -> None:
         order: Order | None = self._cache.order(command.client_order_id)

@@ -1126,6 +1126,164 @@ impl BybitWebSocketClient {
         Self::send_text_inner(&self.inner, &payload).await
     }
 
+    /// Builds order params for placing an order.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_place_order_params(
+        &self,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+        order_side: OrderSide,
+        order_type: OrderType,
+        quantity: Quantity,
+        time_in_force: Option<TimeInForce>,
+        price: Option<Price>,
+        trigger_price: Option<Price>,
+        post_only: Option<bool>,
+        reduce_only: Option<bool>,
+    ) -> BybitWsResult<BybitWsPlaceOrderParams> {
+        let bybit_symbol = BybitSymbol::new(instrument_id.symbol.as_str())
+            .map_err(|e| BybitWsError::ClientError(e.to_string()))?;
+        let raw_symbol = Ustr::from(bybit_symbol.raw_symbol());
+
+        let bybit_side = match order_side {
+            OrderSide::Buy => BybitOrderSide::Buy,
+            OrderSide::Sell => BybitOrderSide::Sell,
+            _ => {
+                return Err(BybitWsError::ClientError(format!(
+                    "Invalid order side: {order_side:?}"
+                )));
+            }
+        };
+
+        let (bybit_order_type, is_stop_order) = match order_type {
+            OrderType::Market => (BybitOrderType::Market, false),
+            OrderType::Limit => (BybitOrderType::Limit, false),
+            OrderType::StopMarket | OrderType::MarketIfTouched => (BybitOrderType::Market, true),
+            OrderType::StopLimit | OrderType::LimitIfTouched => (BybitOrderType::Limit, true),
+            _ => {
+                return Err(BybitWsError::ClientError(format!(
+                    "Unsupported order type: {order_type:?}"
+                )));
+            }
+        };
+
+        let bybit_tif = if post_only == Some(true) {
+            Some(BybitTimeInForce::PostOnly)
+        } else if let Some(tif) = time_in_force {
+            Some(match tif {
+                TimeInForce::Gtc => BybitTimeInForce::Gtc,
+                TimeInForce::Ioc => BybitTimeInForce::Ioc,
+                TimeInForce::Fok => BybitTimeInForce::Fok,
+                _ => {
+                    return Err(BybitWsError::ClientError(format!(
+                        "Unsupported time in force: {tif:?}"
+                    )));
+                }
+            })
+        } else {
+            None
+        };
+
+        let market_unit = if product_type == BybitProductType::Spot
+            && bybit_order_type == BybitOrderType::Market
+        {
+            Some("baseCoin".to_string())
+        } else {
+            None
+        };
+
+        let params = if is_stop_order {
+            BybitWsPlaceOrderParams {
+                category: product_type,
+                symbol: raw_symbol,
+                side: bybit_side,
+                order_type: bybit_order_type,
+                qty: quantity.to_string(),
+                market_unit,
+                price: price.map(|p| p.to_string()),
+                time_in_force: bybit_tif,
+                order_link_id: Some(client_order_id.to_string()),
+                reduce_only: reduce_only.filter(|&r| r),
+                close_on_trigger: None,
+                trigger_price: trigger_price.map(|p| p.to_string()),
+                trigger_by: Some(BybitTriggerType::LastPrice),
+                trigger_direction: None,
+                tpsl_mode: None,
+                take_profit: None,
+                stop_loss: None,
+                tp_trigger_by: None,
+                sl_trigger_by: None,
+                sl_trigger_price: None,
+                tp_trigger_price: None,
+                sl_order_type: None,
+                tp_order_type: None,
+                sl_limit_price: None,
+                tp_limit_price: None,
+            }
+        } else {
+            BybitWsPlaceOrderParams {
+                category: product_type,
+                symbol: raw_symbol,
+                side: bybit_side,
+                order_type: bybit_order_type,
+                qty: quantity.to_string(),
+                market_unit,
+                price: price.map(|p| p.to_string()),
+                time_in_force: bybit_tif,
+                order_link_id: Some(client_order_id.to_string()),
+                reduce_only: reduce_only.filter(|&r| r),
+                close_on_trigger: None,
+                trigger_price: None,
+                trigger_by: None,
+                trigger_direction: None,
+                tpsl_mode: None,
+                take_profit: None,
+                stop_loss: None,
+                tp_trigger_by: None,
+                sl_trigger_by: None,
+                sl_trigger_price: None,
+                tp_trigger_price: None,
+                sl_order_type: None,
+                tp_order_type: None,
+                sl_limit_price: None,
+                tp_limit_price: None,
+            }
+        };
+
+        Ok(params)
+    }
+
+    /// Builds order params for amending an order.
+    #[allow(clippy::too_many_arguments)]
+    pub fn build_amend_order_params(
+        &self,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId,
+        venue_order_id: Option<VenueOrderId>,
+        client_order_id: Option<ClientOrderId>,
+        quantity: Option<Quantity>,
+        price: Option<Price>,
+    ) -> BybitWsResult<BybitWsAmendOrderParams> {
+        let bybit_symbol = BybitSymbol::new(instrument_id.symbol.as_str())
+            .map_err(|e| BybitWsError::ClientError(e.to_string()))?;
+        let raw_symbol = Ustr::from(bybit_symbol.raw_symbol());
+
+        Ok(BybitWsAmendOrderParams {
+            category: product_type,
+            symbol: raw_symbol,
+            order_id: venue_order_id.map(|v| v.to_string()),
+            order_link_id: client_order_id.map(|c| c.to_string()),
+            qty: quantity.map(|q| q.to_string()),
+            price: price.map(|p| p.to_string()),
+            trigger_price: None,
+            take_profit: None,
+            stop_loss: None,
+            tp_trigger_by: None,
+            sl_trigger_by: None,
+        })
+    }
+
     /// Submits an order using Nautilus domain objects.
     ///
     /// # Errors

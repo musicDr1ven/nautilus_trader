@@ -5715,6 +5715,7 @@ class BybitHttpClient:
         api_key: str | None = None,
         api_secret: str | None = None,
         base_url: str | None = None,
+        testnet: bool = False,
         timeout_secs: int | None = None,
         max_retries: int | None = None,
         retry_delay_ms: int | None = None,
@@ -5849,16 +5850,16 @@ class BybitWebSocketClient:
     @staticmethod
     def new_private(
         environment: BybitEnvironment,
-        api_key: str,
-        api_secret: str,
+        api_key: str | None = None,
+        api_secret: str | None = None,
         url: str | None = None,
         heartbeat: int | None = None,
     ) -> BybitWebSocketClient: ...
     @staticmethod
     def new_trade(
         environment: BybitEnvironment,
-        api_key: str,
-        api_secret: str,
+        api_key: str | None = None,
+        api_secret: str | None = None,
         url: str | None = None,
         heartbeat: int | None = None,
     ) -> BybitWebSocketClient: ...
@@ -5924,6 +5925,77 @@ class BybitWebSocketClient:
         venue_order_ids: list[VenueOrderId | None],
         client_order_ids: list[ClientOrderId | None],
     ) -> None: ...
+    def build_place_order_params(
+        self,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId,
+        client_order_id: ClientOrderId,
+        order_side: OrderSide,
+        order_type: OrderType,
+        quantity: Quantity,
+        time_in_force: TimeInForce | None = None,
+        price: Price | None = None,
+        trigger_price: Price | None = None,
+        post_only: bool | None = None,
+        reduce_only: bool | None = None,
+    ) -> BybitWsPlaceOrderParams: ...
+    def build_amend_order_params(
+        self,
+        product_type: BybitProductType,
+        instrument_id: InstrumentId,
+        venue_order_id: VenueOrderId | None = None,
+        client_order_id: ClientOrderId | None = None,
+        quantity: Quantity | None = None,
+        price: Price | None = None,
+    ) -> BybitWsAmendOrderParams: ...
+    async def batch_place_orders(
+        self,
+        orders: list[BybitWsPlaceOrderParams],
+    ) -> None: ...
+    async def batch_modify_orders(
+        self,
+        orders: list[BybitWsAmendOrderParams],
+    ) -> None: ...
+
+class BybitWsPlaceOrderParams:
+    category: BybitProductType
+    symbol: str
+    side: str
+    order_type: str
+    qty: str
+    market_unit: str | None
+    price: str | None
+    time_in_force: str | None
+    order_link_id: str | None
+    reduce_only: bool | None
+    close_on_trigger: bool | None
+    trigger_price: str | None
+    trigger_by: str | None
+    trigger_direction: int | None
+    tpsl_mode: str | None
+    take_profit: str | None
+    stop_loss: str | None
+    tp_trigger_by: str | None
+    sl_trigger_by: str | None
+    sl_trigger_price: str | None
+    tp_trigger_price: str | None
+    sl_order_type: str | None
+    tp_order_type: str | None
+    sl_limit_price: str | None
+    tp_limit_price: str | None
+
+class BybitWsAmendOrderParams:
+    category: BybitProductType
+    symbol: str
+    order_id: str | None
+    order_link_id: str | None
+    qty: str | None
+    price: str | None
+    trigger_price: str | None
+    take_profit: str | None
+    stop_loss: str | None
+    tp_trigger_by: str | None
+    sl_trigger_by: str | None
 
 def get_bybit_http_base_url(environment: BybitEnvironment) -> str: ...
 def get_bybit_ws_url_public(product_type: BybitProductType, environment: BybitEnvironment) -> str: ...

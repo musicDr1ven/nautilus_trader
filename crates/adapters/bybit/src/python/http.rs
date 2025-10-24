@@ -15,6 +15,7 @@
 
 //! Python bindings for the Bybit HTTP client.
 
+use chrono::{DateTime, Utc};
 use nautilus_core::python::{to_pyruntime_err, to_pyvalue_err};
 use nautilus_model::{
     enums::{OrderSide, OrderType, TimeInForce},
@@ -25,19 +26,20 @@ use nautilus_model::{
 use pyo3::{conversion::IntoPyObjectExt, prelude::*, types::PyList};
 
 use crate::{
-    common::enums::BybitProductType,
+    common::enums::{BybitMarginMode, BybitPositionMode, BybitProductType},
     http::{client::BybitHttpClient, error::BybitHttpError},
 };
 
 #[pymethods]
 impl BybitHttpClient {
     #[new]
-    #[pyo3(signature = (api_key=None, api_secret=None, base_url=None, timeout_secs=None, max_retries=None, retry_delay_ms=None, retry_delay_max_ms=None))]
+    #[pyo3(signature = (api_key=None, api_secret=None, base_url=None, testnet=false, timeout_secs=None, max_retries=None, retry_delay_ms=None, retry_delay_max_ms=None))]
     #[allow(clippy::too_many_arguments)]
     fn py_new(
         api_key: Option<String>,
         api_secret: Option<String>,
         base_url: Option<String>,
+        testnet: bool,
         timeout_secs: Option<u64>,
         max_retries: Option<u32>,
         retry_delay_ms: Option<u64>,
@@ -46,8 +48,19 @@ impl BybitHttpClient {
         let timeout = timeout_secs.or(Some(60));
 
         // Try to get credentials from parameters or environment variables
-        let key = api_key.or_else(|| std::env::var("BYBIT_API_KEY").ok());
-        let secret = api_secret.or_else(|| std::env::var("BYBIT_API_SECRET").ok());
+        let api_key_env = if testnet {
+            "BYBIT_TESTNET_API_KEY"
+        } else {
+            "BYBIT_API_KEY"
+        };
+        let api_secret_env = if testnet {
+            "BYBIT_TESTNET_API_SECRET"
+        } else {
+            "BYBIT_API_SECRET"
+        };
+
+        let key = api_key.or_else(|| std::env::var(api_key_env).ok());
+        let secret = api_secret.or_else(|| std::env::var(api_secret_env).ok());
 
         if let (Some(k), Some(s)) = (key, secret) {
             Self::with_credentials(
