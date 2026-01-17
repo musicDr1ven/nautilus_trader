@@ -304,6 +304,27 @@ as specified in the `pyproject.toml`. We highly recommend installing using [uv](
        cd nautilus_trader
        uv sync --all-extras
 
+   **Alternative setup (if not using uv):**
+   
+   If you're setting up the virtual environment manually, ensure numpy and pandas are properly installed:
+   
+       # Run the setup script to ensure venv has pip and required packages
+       ./scripts/setup_venv.sh
+       
+   Or manually:
+   
+       python -m venv .venv
+       source .venv/bin/activate  # On Windows: .venv\Scripts\activate
+       python -m pip install --upgrade pip
+       python -m pip install "numpy>=1.26.4,<2.0.0" "pandas>=2.2.3,<3.0.0"
+   **If using the hybrid cache:**
+       cargo build --features postgres,greptime
+        python build.py
+           
+        --/home/gabe/.greptimedb/greptime standalone start --config-file=/home/gabe/.greptimedb/config.toml
+        --/home/gabe/.greptimedb/greptime standalone start --config-file=/home/gabe/.greptimedb/config.toml --http-addr 0.0.0.0:4000
+
+  http://172.29.13.247:4000/dashboard/#/dashboard/query
 > [!NOTE]
 >
 > The `--depth 1` flag fetches just the latest commit for a faster, lightweight clone.

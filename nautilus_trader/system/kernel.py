@@ -302,11 +302,43 @@ class NautilusKernel:
                 ),
                 config=config.cache,
             )
+        elif config.cache.database.type in ("postgres", "hybrid"):
+            # Use factory function to create postgres or hybrid cache adapter
+            try:
+                from nautilus_trader.cache.adapter import create_cache_database_adapter
+                # Get user_id from config (passed directly from backtest service)
+                # This ensures multi-user support - each backtest runs in its own process
+                user_id = None
+                if config.cache.database.type == "hybrid":
+                    # Get user_id from config (required for multi-user support)
+                    if hasattr(config, 'user_id') and config.user_id:
+                        user_id = config.user_id
+                    else:
+                        # user_id is required for hybrid cache - raise error if missing
+                        error_msg = "user_id is required in BacktestEngineConfig for hybrid cache. Please ensure user_id is passed when creating the engine config."
+                        raise ValueError(error_msg)
+                elif config.cache.database.type == "postgres":
+                    user_id = None
+                cache_db = create_cache_database_adapter(config.cache, user_id=user_id)
+                if cache_db is None:
+                    self._log.warning("Cache database adapter factory returned None")
+                else:
+                    self._log.info(f"Created cache database adapter: {type(cache_db).__name__}")
+            except ImportError as e:
+                raise ValueError(
+                    f"Failed to import cache adapter factory: {e}. "
+                    "Ensure the required dependencies are installed."
+                ) from e
+            except Exception as e:
+                self._log.error(f"Failed to create cache database adapter: {e}")
+                import traceback
+                self._log.error(traceback.format_exc())
+                raise
         else:
             raise ValueError(
                 f"Unrecognized `config.cache.database.type`, was '{config.cache.database.type}'. "
-                "The only database type currently supported is 'redis', if you don't want a cache database backing "
-                "then you can pass `None` for the `cache.database` ('in-memory' is no longer valid)",
+                "Supported types are: 'redis', 'postgres', 'hybrid'. "
+                "If you don't want a cache database backing, pass `None` for the `cache.database`.",
             )
 
         ########################################################################
@@ -516,7 +548,10 @@ class NautilusKernel:
         self._is_running = False
         self._is_stopping = False
 
-        build_time_ms = nanos_to_millis(time.time_ns() - ts_build)
+        # Calculate build time, handling potential clock adjustments
+        # Use abs() to handle negative deltas (shouldn't happen, but clock adjustments can cause this)
+        build_time_ns = time.time_ns() - ts_build
+        build_time_ms = nanos_to_millis(abs(build_time_ns))
         self._log.info(f"Initialized in {build_time_ms}ms")
 
     def __del__(self) -> None:

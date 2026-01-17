@@ -595,15 +595,17 @@ cdef class BacktestEngine:
         # Validate instrument is correct for the venue
         cdef SimulatedExchange venue = self._venues[instrument.id.venue]
 
-        if (
-            isinstance(instrument, CurrencyPair)
-            and venue.account_type != AccountType.MARGIN
-            and venue.base_currency is not None  # Single-currency account
-        ):
-            raise InvalidConfiguration(
-                f"Cannot add `CurrencyPair` instrument {instrument} "
-                "for a venue with a single-currency CASH account.",
-            )
+        # Removed validation: CurrencyPair is designed for cash markets (spot FX/crypto pairs)
+        # and should work with CASH accounts regardless of whether base_currency is set
+        # if (
+        #     isinstance(instrument, CurrencyPair)
+        #     and venue.account_type != AccountType.MARGIN
+        #     and venue.base_currency is not None  # Single-currency account
+        # ):
+        #     raise InvalidConfiguration(
+        #         f"Cannot add `CurrencyPair` instrument {instrument} "
+        #         "for a venue with a single-currency CASH account.",
+        #     )
 
         # Check client has been registered
         self._add_market_data_client_if_not_exists(instrument.id.venue)

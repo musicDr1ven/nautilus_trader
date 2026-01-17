@@ -28,7 +28,7 @@ dependencies = [
     "click>=8.1.8,<9.0.0",
     "fsspec>=2025.2.0,<2026.0.0",
     "msgspec>=0.19.0,<1.0.0",
-    "numpy>=1.26.4",
+    "numpy>=1.26.4,<2.0.0",  # NumPy 2.x incompatible with many compiled extensions
     "pandas>=2.2.3,<3.0.0",
     "pyarrow>=19.0.1",
     "pytz>=2025.1.0",
@@ -46,8 +46,8 @@ docs = "https://nautilustrader.io/docs"
 requires = [
     "setuptools>=78",
     "poetry-core>=2.0.1",
-    "numpy>=1.26.4",
-    "cython==3.1.0a1",
+    "numpy>=1.26.4,<2.0.0",  # NumPy 2.x incompatible with many compiled extensions
+    "cython>=3.1.0,<3.2.0",
 ]
 build-backend = "poetry.core.masonry.api"
 
@@ -98,7 +98,7 @@ polymarket = [
 
 [dependency-groups]
 dev = [
-    "cython==3.1.0a1",
+    "cython>=3.1.0,<3.2.0",
     "setuptools>=75",
     "black>=25.1.0,<26.0.0",
     "docformatter>=1.7.5,<2.0.0",

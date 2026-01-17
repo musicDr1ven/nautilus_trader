@@ -122,7 +122,8 @@ def _build_rust_libs() -> None:
             features = ["--all-features"]
         else:
             # Enable features needed for main build, but not high_precision
-            features = ["--features", "ffi,python,extension-module"]
+            # Include postgres and greptime for hybrid cache support
+            features = ["--features", "ffi,python,extension-module,postgres,greptime"]
 
         cmd_args = [
             "cargo",

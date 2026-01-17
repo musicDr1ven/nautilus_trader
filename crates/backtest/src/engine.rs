@@ -181,16 +181,17 @@ impl BacktestEngine {
     pub fn add_instrument(&mut self, instrument: InstrumentAny) -> anyhow::Result<()> {
         let instrument_id = instrument.id();
         if let Some(exchange) = self.venues.get_mut(&instrument.id().venue) {
-            // check if instrument is of variant CurrencyPair
-            if matches!(instrument, InstrumentAny::CurrencyPair(_))
-                && exchange.borrow().account_type != AccountType::Margin
-                && exchange.borrow().base_currency.is_some()
-            {
-                anyhow::bail!(
-                    "Cannot add a `CurrencyPair` instrument {} for a venue with a single-currency CASH account",
-                    instrument_id
-                )
-            }
+            // Removed validation: CurrencyPair is designed for cash markets (spot FX/crypto pairs)
+            // and should work with CASH accounts regardless of whether base_currency is set
+            // if matches!(instrument, InstrumentAny::CurrencyPair(_))
+            //     && exchange.borrow().account_type != AccountType::Margin
+            //     && exchange.borrow().base_currency.is_some()
+            // {
+            //     anyhow::bail!(
+            //         "Cannot add a `CurrencyPair` instrument {} for a venue with a single-currency CASH account",
+            //         instrument_id
+            //     )
+            // }
             exchange
                 .borrow_mut()
                 .add_instrument(instrument.clone())

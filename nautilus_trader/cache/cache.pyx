@@ -169,6 +169,20 @@ cdef class Cache(CacheFacade):
 
         self._log.info("READY")
 
+# -- PROPERTIES -----------------------------------------------------------------------------------
+
+    @property
+    def database(self) -> CacheDatabaseFacade | None:
+        """
+        Return the cache database adapter.
+        
+        Returns
+        -------
+        CacheDatabaseFacade | None
+            The database adapter if set, otherwise None.
+        """
+        return self._database
+
 # -- COMMANDS -------------------------------------------------------------------------------------
 
     cpdef void cache_all(self):
@@ -267,7 +281,8 @@ cdef class Cache(CacheFacade):
         self._log.debug(f"Loading currencies from database")
 
         if self._database is not None:
-            self._currencies = self._database.load_currencies()
+            currencies_result = self._database.load_currencies()
+            self._currencies = currencies_result
         else:
             self._currencies = {}
 
@@ -1402,6 +1417,10 @@ cdef class Cache(CacheFacade):
 
         ticks.appendleft(tick)
 
+        # Persist to database adapter if available
+        if self._database is not None:
+            self._database.add_quote(tick)
+
     cpdef void add_trade_tick(self, TradeTick tick):
         """
         Add the given trade tick to the cache.
@@ -1423,6 +1442,10 @@ cdef class Cache(CacheFacade):
             self._trade_ticks[instrument_id] = ticks
 
         ticks.appendleft(tick)
+
+        # Persist to database adapter if available
+        if self._database is not None:
+            self._database.add_trade(tick)
 
     cpdef void add_mark_price(self, MarkPriceUpdate mark_price):
         """
@@ -1493,6 +1516,10 @@ cdef class Cache(CacheFacade):
         elif price_type == PriceType.ASK:
             self._bars_ask[bar.bar_type.instrument_id] = bar
 
+        # Persist to database adapter if available
+        if self._database is not None:
+            self._database.add_bar(bar)
+
     cpdef void add_quote_ticks(self, list ticks):
         """
         Add the given quotes to the cache.
@@ -1527,6 +1554,9 @@ cdef class Cache(CacheFacade):
                 # Only add more recent data to cache
                 continue
             cached_ticks.appendleft(tick)
+            # Persist to database adapter if available
+            if self._database is not None:
+                self._database.add_quote(tick)
 
     cpdef void add_trade_ticks(self, list ticks):
         """
@@ -1561,6 +1591,9 @@ cdef class Cache(CacheFacade):
                 # Only add more recent data to cache
                 continue
             cached_ticks.appendleft(tick)
+            # Persist to database adapter if available
+            if self._database is not None:
+                self._database.add_trade(tick)
 
     cpdef void add_bars(self, list bars):
         """
@@ -1595,6 +1628,9 @@ cdef class Cache(CacheFacade):
                 # Only add more recent data to cache
                 continue
             cached_bars.appendleft(bar)
+            # Persist to database adapter if available
+            if self._database is not None:
+                self._database.add_bar(bar)
 
         bar = bars[-1]
         cdef PriceType price_type = bar.bar_type.spec.price_type

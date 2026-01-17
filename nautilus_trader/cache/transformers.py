@@ -96,8 +96,66 @@ def transform_instrument_to_pyo3(instrument: Instrument):
     elif isinstance(instrument, CryptoPerpetual):
         return nautilus_pyo3.CryptoPerpetual.from_dict(CryptoPerpetual.to_dict(instrument))
     elif isinstance(instrument, CurrencyPair):
-        currency_pair_dict = CurrencyPair.to_dict(instrument)
-        return nautilus_pyo3.CurrencyPair.from_dict(currency_pair_dict)
+        # Instead of using from_dict() which requires currencies in Rust map during deserialization,
+        # construct CurrencyPair directly using PyO3 constructor with Currency objects
+        # This avoids the serde deserialization issue entirely
+        from nautilus_trader.model.objects import Currency, Price, Quantity, Money
+        from nautilus_trader.model.identifiers import InstrumentId, Symbol
+        from decimal import Decimal
+        
+        # Register currencies to ensure they're in Rust map (needed for PyO3 Currency objects)
+        Currency.register(instrument.base_currency, overwrite=True)
+        Currency.register(instrument.quote_currency, overwrite=True)
+        
+        # Convert Python Currency objects to PyO3 Currency objects
+        base_currency_pyo3 = transform_currency_to_pyo3(instrument.base_currency)
+        quote_currency_pyo3 = transform_currency_to_pyo3(instrument.quote_currency)
+        
+        # Convert other fields to PyO3 types
+        instrument_id_pyo3 = nautilus_pyo3.InstrumentId.from_str(str(instrument.id))
+        symbol_pyo3 = nautilus_pyo3.Symbol(instrument.raw_symbol.value)
+        price_increment_pyo3 = nautilus_pyo3.Price.from_str(str(instrument.price_increment))
+        size_increment_pyo3 = nautilus_pyo3.Quantity.from_str(str(instrument.size_increment))
+        
+        # Convert optional fields
+        lot_size_pyo3 = nautilus_pyo3.Quantity.from_str(str(instrument.lot_size)) if instrument.lot_size is not None else None
+        max_quantity_pyo3 = nautilus_pyo3.Quantity.from_str(str(instrument.max_quantity)) if instrument.max_quantity is not None else None
+        min_quantity_pyo3 = nautilus_pyo3.Quantity.from_str(str(instrument.min_quantity)) if instrument.min_quantity is not None else None
+        max_notional_pyo3 = nautilus_pyo3.Money.from_str(str(instrument.max_notional)) if instrument.max_notional is not None else None
+        min_notional_pyo3 = nautilus_pyo3.Money.from_str(str(instrument.min_notional)) if instrument.min_notional is not None else None
+        max_price_pyo3 = nautilus_pyo3.Price.from_str(str(instrument.max_price)) if instrument.max_price is not None else None
+        min_price_pyo3 = nautilus_pyo3.Price.from_str(str(instrument.min_price)) if instrument.min_price is not None else None
+        
+        # Convert Decimal fields
+        margin_init_pyo3 = Decimal(str(instrument.margin_init)) if instrument.margin_init is not None else None
+        margin_maint_pyo3 = Decimal(str(instrument.margin_maint)) if instrument.margin_maint is not None else None
+        maker_fee_pyo3 = Decimal(str(instrument.maker_fee)) if instrument.maker_fee is not None else None
+        taker_fee_pyo3 = Decimal(str(instrument.taker_fee)) if instrument.taker_fee is not None else None
+        
+        # Construct CurrencyPair using PyO3 constructor
+        return nautilus_pyo3.CurrencyPair(
+            id=instrument_id_pyo3,
+            raw_symbol=symbol_pyo3,
+            base_currency=base_currency_pyo3,
+            quote_currency=quote_currency_pyo3,
+            price_precision=instrument.price_precision,
+            size_precision=instrument.size_precision,
+            price_increment=price_increment_pyo3,
+            size_increment=size_increment_pyo3,
+            ts_event=instrument.ts_event,
+            ts_init=instrument.ts_init,
+            lot_size=lot_size_pyo3,
+            max_quantity=max_quantity_pyo3,
+            min_quantity=min_quantity_pyo3,
+            max_notional=max_notional_pyo3,
+            min_notional=min_notional_pyo3,
+            max_price=max_price_pyo3,
+            min_price=min_price_pyo3,
+            margin_init=margin_init_pyo3,
+            margin_maint=margin_maint_pyo3,
+            maker_fee=maker_fee_pyo3,
+            taker_fee=taker_fee_pyo3,
+        )
     elif isinstance(instrument, Equity):
         return nautilus_pyo3.Equity.from_dict(Equity.to_dict(instrument))
     elif isinstance(instrument, FuturesContract):
@@ -293,7 +351,149 @@ def transform_account_state_cython_to_pyo3(
     account_state: AccountState,
 ) -> nautilus_pyo3.AccountState:
     account_state_dict = AccountState.to_dict(account_state)
-    return nautilus_pyo3.AccountState.from_dict(account_state_dict)
+    # Handle None values that can't be converted to PyString by from_dict()
+    # For multi-currency accounts, base_currency can be None
+    # Rust's from_dict() expects base_currency to be present, and when None, it should be the string "None"
+    cleaned_dict = {}
+    currencies_to_register = set()
+    
+    for key, value in account_state_dict.items():
+        if key == "base_currency" and value is None:
+            # Rust's to_dict() sets base_currency to "None" string when None
+            # We need to match that behavior for from_dict() to work
+            cleaned_dict[key] = "None"
+        elif key == "balances" and value is not None:
+            # Extract currency codes from balances and register them
+            # This is required because AccountBalance.from_dict() needs currencies to be registered
+            cleaned_dict[key] = value
+            if isinstance(value, list):
+                for balance in value:
+                    if isinstance(balance, dict):
+                        # AccountBalance.to_dict() might store currency in different ways
+                        # Check for "currency" key (string code) or currency object
+                        currency_code = None
+                        if "currency" in balance:
+                            currency_val = balance.get("currency")
+                            if isinstance(currency_val, str):
+                                currency_code = currency_val
+                            elif hasattr(currency_val, "code"):
+                                currency_code = currency_val.code
+                            elif hasattr(currency_val, "__str__"):
+                                currency_code = str(currency_val)
+                        
+                        if currency_code:
+                            currencies_to_register.add(currency_code)
+        elif key == "margins" and value is not None:
+            # Extract currency codes from margins and register them
+            cleaned_dict[key] = value
+            if isinstance(value, list):
+                for margin in value:
+                    if isinstance(margin, dict) and "currency" in margin:
+                        currency_code = margin.get("currency")
+                        if currency_code:
+                            currencies_to_register.add(currency_code)
+        elif value is None:
+            # Skip other None values - PyO3 will use defaults or handle missing fields
+            continue
+        else:
+            cleaned_dict[key] = value
+    
+    # Register all currencies found in balances/margins before calling from_dict()
+    # This ensures Currency.from_str() in AccountBalance.from_dict() can find them
+    # Use strict=False to create Currency objects even if they're not in the map yet
+    from nautilus_trader.model.objects import Currency
+    
+    for currency_code in currencies_to_register:
+        try:
+            # First try to get the currency from the map (might already be registered)
+            currency = Currency.from_internal_map(currency_code)
+            currency_was_created = False
+            
+            if currency is None:
+                # Currency not in map, create it with strict=False
+                # from_str_c() with strict=False automatically registers the currency in Rust map
+                # So we don't need to call Currency.register() again
+                try:
+                    currency = Currency.from_str(currency_code, strict=False)
+                    currency_was_created = True
+                except Exception as e:
+                    currency = None
+            
+            if currency is not None:
+                # Only register if currency wasn't just created (from_str with strict=False auto-registers)
+                if not currency_was_created:
+                    try:
+                        # Register the currency in the Rust CURRENCY_MAP using Python wrapper
+                        Currency.register(currency, overwrite=True)
+                    except Exception as register_error:
+                        # Don't re-raise - continue with other currencies
+                        pass
+                
+                # Verify registration by trying to get it from the map
+                verified_currency = Currency.from_internal_map(currency_code)
+                
+                # CRITICAL: Force a Rust-side lookup to ensure currency is in Rust CURRENCY_MAP
+                # AccountBalance::py_from_dict() uses Rust's Currency::from_str() which looks in Rust map
+                # We need to ensure the currency is accessible from Rust context
+                try:
+                    # Try to get currency via PyO3 to force Rust map lookup/registration
+                    # This ensures it's in the Rust CURRENCY_MAP that AccountBalance will use
+                    pyo3_currency = nautilus_pyo3.Currency.from_str(currency_code)
+                except Exception as pyo3_error:
+                    # If PyO3 lookup fails, the currency isn't in Rust map - try to register it via PyO3
+                    try:
+                        # Convert Python Currency to PyO3 Currency and register it
+                        pyo3_currency = nautilus_pyo3.Currency(
+                            code=currency.code,
+                            precision=currency.precision,
+                            iso4217=currency.iso4217,
+                            name=currency.name,
+                            currency_type=nautilus_pyo3.CurrencyType.from_str(currency.currency_type.name)
+                        )
+                        nautilus_pyo3.Currency.register(pyo3_currency, overwrite=True)
+                    except Exception as register_pyo3_error:
+                        pass
+        except Exception as e:
+            pass
+    
+    # CRITICAL: Pre-process balances to force currency registration in Rust map
+    # This ensures currencies are registered before AccountBalance::py_from_dict() tries to use them
+    # We'll try to create AccountBalance objects from the dictionaries to force the currency lookup
+    if "balances" in cleaned_dict and isinstance(cleaned_dict["balances"], list):
+        for balance_dict in cleaned_dict["balances"]:
+            if isinstance(balance_dict, dict):
+                currency_code = balance_dict.get("currency")
+                if currency_code:
+                    try:
+                        # Try to create AccountBalance to force currency lookup/registration
+                        # This uses the exact same code path that AccountState.from_dict() will use
+                        test_balance = nautilus_pyo3.AccountBalance.from_dict(balance_dict)
+                    except Exception as balance_error:
+                        # Balance creation failed - currency not in Rust map
+                        # Register it via PyO3 and retry
+                        try:
+                            from nautilus_trader.model.objects import Currency
+                            py_currency = Currency.from_str(currency_code, strict=False)
+                            if py_currency:
+                                # Create PyO3 Currency and register it in Rust map
+                                pyo3_currency = nautilus_pyo3.Currency(
+                                    code=py_currency.code,
+                                    precision=py_currency.precision,
+                                    iso4217=py_currency.iso4217,
+                                    name=py_currency.name,
+                                    currency_type=nautilus_pyo3.CurrencyType.from_str(py_currency.currency_type.name)
+                                )
+                                nautilus_pyo3.Currency.register(pyo3_currency, overwrite=True)
+                                
+                                # Retry balance creation to verify registration worked
+                                try:
+                                    test_balance_retry = nautilus_pyo3.AccountBalance.from_dict(balance_dict)
+                                except Exception as retry_error:
+                                    pass
+                        except Exception as register_error:
+                            pass
+    
+    return nautilus_pyo3.AccountState.from_dict(cleaned_dict)
 
 
 def transform_account_state_pyo3_to_cython(

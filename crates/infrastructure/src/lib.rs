@@ -41,5 +41,8 @@ pub mod python;
 #[cfg(feature = "redis")]
 pub mod redis;
 
+#[cfg(feature = "rabbitmq")]
+pub mod rabbitmq;
+
 #[cfg(feature = "postgres")]
 pub mod sql;

@@ -38,7 +38,7 @@ use nautilus_model::{
         Data, bar::Bar, delta::OrderBookDelta, depth::OrderBookDepth10, quote::QuoteTick,
         trade::TradeTick,
     },
-    types::{price::PriceRaw, quantity::QuantityRaw},
+    types::{fixed::PRECISION_BYTES, price::PriceRaw, quantity::QuantityRaw},
 };
 use pyo3::prelude::*;
 
@@ -76,12 +76,30 @@ pub enum EncodingError {
 
 #[inline]
 fn get_raw_price(bytes: &[u8]) -> PriceRaw {
-    PriceRaw::from_le_bytes(bytes.try_into().unwrap())
+    let expected_size = std::mem::size_of::<PriceRaw>();
+    PriceRaw::from_le_bytes(bytes.try_into().unwrap_or_else(|_| {
+        panic!(
+            "PriceRaw size mismatch: expected {} bytes (PRECISION_BYTES={}), got {} bytes. \
+             This may indicate the Parquet file was written with a different precision mode (high-precision vs standard).",
+            expected_size,
+            PRECISION_BYTES,
+            bytes.len()
+        )
+    }))
 }
 
 #[inline]
 fn get_raw_quantity(bytes: &[u8]) -> QuantityRaw {
-    QuantityRaw::from_le_bytes(bytes.try_into().unwrap())
+    let expected_size = std::mem::size_of::<QuantityRaw>();
+    QuantityRaw::from_le_bytes(bytes.try_into().unwrap_or_else(|_| {
+        panic!(
+            "QuantityRaw size mismatch: expected {} bytes (PRECISION_BYTES={}), got {} bytes. \
+             This may indicate the Parquet file was written with a different precision mode (high-precision vs standard).",
+            expected_size,
+            PRECISION_BYTES,
+            bytes.len()
+        )
+    }))
 }
 
 pub trait ArrowSchemaProvider {

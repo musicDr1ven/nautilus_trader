@@ -50,7 +50,10 @@ pub struct OptionSpreadModel(pub OptionSpread);
 
 impl<'r> FromRow<'r, PgRow> for InstrumentAnyModel {
     fn from_row(row: &'r PgRow) -> Result<Self, sqlx::Error> {
-        let kind = row.get::<String, _>("kind");
+        // kind is nullable in the database, so use try_get with Option
+        let kind_opt: Option<String> = row.try_get("kind")?;
+        let kind = kind_opt.unwrap_or_else(|| "CURRENCY_PAIR".to_string());
+        
         if kind == "BETTING" {
             Ok(InstrumentAnyModel(InstrumentAny::Betting(
                 BettingInstrumentModel::from_row(row).unwrap().0,
@@ -655,13 +658,27 @@ impl<'r> FromRow<'r, PgRow> for CurrencyPairModel {
             .try_get::<String, _>("quote_currency")
             .map(Currency::from)?;
         let price_precision = row.try_get::<i32, _>("price_precision")?;
-        let size_precision = row.try_get::<i32, _>("size_precision")?;
+        // size_precision is nullable, default to 0 if NULL
+        let size_precision = row.try_get::<Option<i32>, _>("size_precision")?
+            .unwrap_or(0);
         let price_increment = row
             .try_get::<String, _>("price_increment")
             .map(|res| Price::from(res.as_str()))?;
+        // size_increment is nullable - if NULL, derive from size_precision to match precision
+        // precision 0 -> "1", precision 1 -> "0.1", precision 2 -> "0.01", etc.
         let size_increment = row
-            .try_get::<String, _>("size_increment")
-            .map(|res| Quantity::from(res.as_str()))?;
+            .try_get::<Option<String>, _>("size_increment")?
+            .map(|res| Quantity::from(res.as_str()))
+            .unwrap_or_else(|| {
+                if size_precision == 0 {
+                    Quantity::from("1")
+                } else {
+                    let mut s = String::from("0.");
+                    s.push_str(&"0".repeat((size_precision - 1) as usize));
+                    s.push('1');
+                    Quantity::from(s.as_str())
+                }
+            });
         let lot_size = row
             .try_get::<Option<String>, _>("lot_size")
             .ok()
@@ -690,18 +707,20 @@ impl<'r> FromRow<'r, PgRow> for CurrencyPairModel {
             .try_get::<Option<String>, _>("min_price")
             .ok()
             .and_then(|res| res.map(|res| Price::from(res.as_str())));
+        // margin_init and margin_maint are NOT NULL in schema
         let margin_init = row
             .try_get::<String, _>("margin_init")
             .map(|res| Some(Decimal::from_str(res.as_str()).unwrap()))?;
         let margin_maint = row
             .try_get::<String, _>("margin_maint")
             .map(|res| Some(Decimal::from_str(res.as_str()).unwrap()))?;
+        // maker_fee and taker_fee are nullable, handle NULL
         let maker_fee = row
-            .try_get::<String, _>("maker_fee")
-            .map(|res| Some(Decimal::from_str(res.as_str()).unwrap()))?;
+            .try_get::<Option<String>, _>("maker_fee")?
+            .map(|res| Decimal::from_str(res.as_str()).unwrap());
         let taker_fee = row
-            .try_get::<String, _>("taker_fee")
-            .map(|res| Some(Decimal::from_str(res.as_str()).unwrap()))?;
+            .try_get::<Option<String>, _>("taker_fee")?
+            .map(|res| Decimal::from_str(res.as_str()).unwrap());
         let ts_event = row.try_get::<String, _>("ts_event").map(UnixNanos::from)?;
         let ts_init = row.try_get::<String, _>("ts_init").map(UnixNanos::from)?;
 

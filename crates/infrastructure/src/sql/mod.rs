@@ -14,6 +14,8 @@
 // -------------------------------------------------------------------------------------------------
 
 pub mod cache;
+pub mod greptime_client;
+pub mod greptime_postgres_hybrid_cache;
 pub mod models;
 pub mod pg;
 pub mod queries;

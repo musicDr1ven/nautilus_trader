@@ -129,6 +129,12 @@ impl AccountState {
         let event_id: String = dict.get_item("event_id")?.extract()?;
         let ts_event: u64 = dict.get_item("ts_event")?.extract()?;
         let ts_init: u64 = dict.get_item("ts_init")?.extract()?;
+        // Handle base_currency: if it's "None" string, set to None; otherwise parse as Currency
+        let base_currency_option = if base_currency == "None" || base_currency.is_empty() {
+            None
+        } else {
+            Some(Currency::from_str(base_currency.as_str()).map_err(to_pyvalue_err)?)
+        };
         let account = Self::new(
             AccountId::from(account_id.as_str()),
             AccountType::from_str(account_type.as_str()).unwrap(),
@@ -138,7 +144,7 @@ impl AccountState {
             UUID4::from_str(event_id.as_str()).unwrap(),
             ts_event.into(),
             ts_init.into(),
-            Some(Currency::from_str(base_currency.as_str()).map_err(to_pyvalue_err)?),
+            base_currency_option,
         );
         Ok(account)
     }

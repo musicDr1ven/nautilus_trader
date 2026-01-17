@@ -32,6 +32,40 @@ build-wheel:
 build-wheel-debug:
 	BUILD_MODE=debug uv build --wheel
 
+.PHONY: rebuild-rust
+rebuild-rust:
+	cargo build --release --features python,greptime,postgres,high-precision
+	@python3 -c "import sysconfig; ext_suffix = sysconfig.get_config_var('EXT_SUFFIX'); \
+		import shutil; from pathlib import Path; \
+		src = Path('target/release/libnautilus_pyo3.so'); \
+		dst = Path('nautilus_trader/core') / f'nautilus_pyo3{ext_suffix}'; \
+		shutil.copyfile(src, dst); \
+		print(f'Copied {src} to {dst}')"
+
+.PHONY: rebuild-rust-debug
+rebuild-rust-debug:
+	cargo build --features python,greptime,postgres,high-precision
+	@python3 -c "import sysconfig; ext_suffix = sysconfig.get_config_var('EXT_SUFFIX'); \
+		import shutil; from pathlib import Path; \
+		src = Path('target/debug/libnautilus_pyo3.so'); \
+		dst = Path('nautilus_trader/core') / f'nautilus_pyo3{ext_suffix}'; \
+		shutil.copyfile(src, dst); \
+		print(f'Copied {src} to {dst}')"
+
+.PHONY: rebuild-python
+rebuild-python:
+	BUILD_MODE=release uv run --active --no-sync build.py
+
+.PHONY: rebuild-python-debug
+rebuild-python-debug:
+	BUILD_MODE=debug uv run --active --no-sync build.py
+
+.PHONY: rebuild-all
+rebuild-all: rebuild-rust rebuild-python
+
+.PHONY: rebuild-all-debug
+rebuild-all-debug: rebuild-rust-debug rebuild-python-debug
+
 .PHONY: clean
 clean:
 	find . -type d -name "__pycache" -print0 | xargs -0 rm -rf

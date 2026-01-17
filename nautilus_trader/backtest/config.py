@@ -346,6 +346,8 @@ class BacktestEngineConfig(NautilusKernelConfig, frozen=True):
         If logging should be bypassed.
     run_analysis : bool, default True
         If post backtest performance analysis should be run.
+    user_id : str, optional
+        The user ID for multi-user support. Used by the cache adapter to isolate data per user.
 
     """
 
@@ -355,6 +357,7 @@ class BacktestEngineConfig(NautilusKernelConfig, frozen=True):
     risk_engine: RiskEngineConfig = RiskEngineConfig()
     exec_engine: ExecEngineConfig = ExecEngineConfig()
     run_analysis: bool = True
+    user_id: str | None = None
 
 
 class BacktestRunConfig(NautilusConfig, frozen=True):
